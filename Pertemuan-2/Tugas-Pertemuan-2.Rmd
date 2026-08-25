@@ -1,0 +1,477 @@
+---
+title: "Tugas Pertemuan 2 - Shira Pramudita"
+subtitle: "Perbandingan Metode Pemulusan pada Data Beban Listrik Jerman Tahun 2023"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: bootstrap
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 9, fig.height = 4.5)
+```
+
+# Pendahuluan
+
+## Deskripsi Data
+
+Data yang digunakan adalah **beban listrik harian Jerman (*daily electricity load*)** sepanjang **tahun 2023**, yaitu dari 1 Januari 2023 hingga 31 Desember 2023 sebanyak **365 observasi**. Beban listrik menyatakan total konsumsi listrik nasional dalam satuan megawatt (MW).
+
+Data ini merupakan bagian dari gugus data kelompok yang berjumlah 1.826 observasi harian (2021--2025). Sesuai ketentuan tugas, gugus data dibagi rata kepada setiap anggota kelompok, dan bagian yang dianalisis pada laporan ini adalah periode tahun 2023 secara penuh.
+
+**Sumber data:** Energy-Charts, Fraunhofer Institute for Solar Energy Systems (ISE). Data asli bersumber dari Bundesnetzagentur | SMARD.de dengan lisensi CC BY 4.0, tersedia pada <https://www.energy-charts.info/>. Data mentah tersedia pada frekuensi 15 menit, kemudian diagregasi menjadi rata-rata harian.
+
+## Alasan Pemilihan Peubah
+
+Beban listrik dipilih karena memiliki **pola musiman mingguan yang kuat**. Aktivitas industri dan perkantoran menurun tajam pada akhir pekan, sehingga konsumsi listrik hari Sabtu dan Minggu jauh lebih rendah dibandingkan hari kerja. Karakteristik ini membuat data cocok untuk membandingkan metode pemulusan yang mengakomodasi musiman (Holt-Winters) dengan metode yang tidak (SMA, DMA, SES, DES).
+
+# Library
+
+```{r}
+library(forecast)
+library(TTR)
+library(graphics)
+library(ggplot2)
+```
+
+# Impor Data
+
+```{r}
+data <- read.csv("Data-Beban-Listrik-Jerman-2023.csv")
+data$Tanggal <- as.Date(data$Tanggal)
+head(data)
+```
+
+```{r}
+str(data)
+```
+
+Data terdiri atas tiga peubah, yaitu `Tanggal`, `Hari` (nama hari dalam minggu), dan `Beban` (beban listrik dalam MW). Peubah yang dianalisis adalah `Beban`.
+
+# Eksplorasi Data
+
+## Statistik Deskriptif
+
+```{r}
+summary(data$Beban)
+```
+
+```{r}
+cat("Jumlah observasi :", nrow(data), "\n")
+cat("Rata-rata        :", round(mean(data$Beban), 2), "MW\n")
+cat("Simpangan baku   :", round(sd(data$Beban), 2), "MW\n")
+```
+
+## Plot Deret Waktu
+
+Data diubah terlebih dahulu menjadi objek deret waktu. Karena pola musiman yang diduga adalah mingguan, frekuensi ditetapkan sebesar 7.
+
+```{r}
+data.ts <- ts(data$Beban, frequency = 7)
+```
+
+```{r}
+ts.plot(data.ts, xlab = "Minggu ke-", ylab = "Beban Listrik (MW)",
+        main = "Plot Deret Waktu Beban Listrik Jerman 2023", col = "darkblue")
+```
+
+Plot menunjukkan adanya fluktuasi yang berulang dengan pola cukup teratur. Terlihat pula kecenderungan beban yang lebih rendah pada pertengahan tahun (musim panas) dan lebih tinggi pada awal serta akhir tahun (musim dingin), yang berkaitan dengan kebutuhan pemanas ruangan.
+
+```{r}
+ggplot(data, aes(x = Tanggal, y = Beban)) +
+  geom_line(color = "steelblue") +
+  labs(x = "Tanggal", y = "Beban Listrik (MW)",
+       title = "Beban Listrik Harian Jerman Tahun 2023") +
+  theme_bw()
+```
+
+## Pemeriksaan Pola Musiman Mingguan
+
+```{r}
+urutan <- c("Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min")
+data$Hari <- factor(data$Hari, levels = urutan)
+rata_hari <- tapply(data$Beban, data$Hari, mean)
+round(rata_hari, 2)
+```
+
+```{r}
+barplot(rata_hari, col = "steelblue", ylim = c(0, 60000),
+        main = "Rata-rata Beban Listrik Menurut Hari",
+        xlab = "Hari", ylab = "Beban Listrik (MW)")
+```
+
+```{r}
+boxplot(Beban ~ Hari, data = data, col = "lightblue",
+        main = "Sebaran Beban Listrik Menurut Hari",
+        xlab = "Hari", ylab = "Beban Listrik (MW)")
+```
+
+Rata-rata beban pada hari kerja berkisar antara 54.000--55.800 MW, sedangkan pada hari Sabtu turun menjadi sekitar 47.000 MW dan hari Minggu sekitar 44.200 MW. Selisih antara hari Rabu (tertinggi) dan hari Minggu (terendah) mencapai sekitar **21%**. Pola ini konsisten sepanjang tahun sebagaimana terlihat pada boxplot, sehingga dapat disimpulkan bahwa **data memiliki komponen musiman mingguan yang kuat**.
+
+## Dekomposisi
+
+```{r}
+plot(decompose(data.ts))
+```
+
+Hasil dekomposisi memperlihatkan komponen musiman yang jelas dan berulang, disertai komponen tren yang bergerak lambat.
+
+# Pembagian Data
+
+Data dibagi menjadi data latih dan data uji dengan perbandingan 80% : 20%.
+
+```{r}
+n <- nrow(data)
+n_train <- floor(0.8 * n)
+
+training <- data[1:n_train, ]
+testing  <- data[(n_train + 1):n, ]
+
+train.ts <- ts(training$Beban, frequency = 7)
+test.ts  <- ts(testing$Beban, frequency = 7)
+
+cat("Jumlah data latih :", nrow(training), "observasi\n")
+cat("Periode data latih:", format(min(training$Tanggal)), "s.d.", format(max(training$Tanggal)), "\n")
+cat("Jumlah data uji   :", nrow(testing), "observasi\n")
+cat("Periode data uji  :", format(min(testing$Tanggal)), "s.d.", format(max(testing$Tanggal)), "\n")
+```
+
+```{r}
+ggplot() +
+  geom_line(data = training, aes(x = Tanggal, y = Beban, col = "Data Latih")) +
+  geom_line(data = testing,  aes(x = Tanggal, y = Beban, col = "Data Uji")) +
+  labs(x = "Tanggal", y = "Beban Listrik (MW)",
+       title = "Pembagian Data Latih dan Data Uji") +
+  scale_colour_manual(name = "Keterangan:",
+                      breaks = c("Data Latih", "Data Uji"),
+                      values = c("blue", "red")) +
+  theme_bw() + theme(legend.position = "bottom")
+```
+
+# Ukuran Akurasi
+
+Perbandingan kinerja metode dilakukan menggunakan empat ukuran akurasi berikut.
+
+$$
+SSE = \sum_{t=1}^{n}(y_t - \hat{y}_t)^2
+$$
+
+$$
+MSE = \frac{1}{n}\sum_{t=1}^{n}(y_t - \hat{y}_t)^2
+$$
+
+$$
+RMSE = \sqrt{\frac{1}{n}\sum_{t=1}^{n}(y_t - \hat{y}_t)^2}
+$$
+
+$$
+MAPE = \frac{1}{n}\sum_{t=1}^{n}\left|\frac{y_t - \hat{y}_t}{y_t}\right| \times 100\%
+$$
+
+Fungsi berikut digunakan untuk menghitung keempat ukuran tersebut pada data uji.
+
+```{r}
+ukuran_akurasi <- function(aktual, ramalan) {
+  galat <- aktual - ramalan
+  c(SSE  = sum(galat^2),
+    MSE  = mean(galat^2),
+    RMSE = sqrt(mean(galat^2)),
+    MAPE = mean(abs(galat / aktual)) * 100)
+}
+
+h <- nrow(testing)   # horizon peramalan
+hasil <- list()      # penampung hasil tiap metode
+```
+
+# Single Moving Average (SMA)
+
+Single Moving Average memuluskan data dengan merata-ratakan $m$ data terakhir. Nilai pemulusan pada periode ke-$t$ berperan sebagai ramalan untuk periode ke-$(t+1)$.
+
+$$
+S_t = \frac{1}{m}\sum_{i=t-m+1}^{t} X_i
+$$
+
+Rentang $m = 7$ dipilih agar sesuai dengan panjang siklus mingguan data.
+
+```{r}
+sma <- SMA(train.ts, n = 7)
+data_sma <- cbind(aktual = c(train.ts, NA),
+                  pemulusan = c(sma, NA),
+                  ramalan = c(NA, sma))
+head(data_sma, 10)
+```
+
+```{r}
+ts.plot(train.ts, xlab = "Minggu ke-", ylab = "Beban Listrik (MW)",
+        col = "black", main = "Pemulusan SMA dengan m = 7")
+lines(sma, col = "red", lwd = 2)
+legend("bottomleft", legend = c("Data Aktual", "Pemulusan SMA"),
+       col = c("black", "red"), lty = 1, cex = 0.8)
+```
+
+SMA menghasilkan **ramalan yang konstan** untuk seluruh periode ke depan, yaitu sebesar nilai pemulusan terakhir.
+
+```{r}
+ramalan_sma <- rep(tail(sma[!is.na(sma)], 1), h)
+hasil[["SMA (m=7)"]] <- ukuran_akurasi(testing$Beban, ramalan_sma)
+round(hasil[["SMA (m=7)"]], 3)
+```
+
+# Double Moving Average (DMA)
+
+Double Moving Average melakukan perataan sebanyak dua kali sehingga lebih sesuai untuk data berpola tren.
+
+$$
+S_{1,t} = \frac{1}{m}\sum_{i=t-m+1}^{t} X_i \qquad
+S_{2,t} = \frac{1}{m}\sum_{i=t-m+1}^{t} S_{1,i}
+$$
+
+$$
+A_t = 2S_{1,t} - S_{2,t} \qquad
+B_t = \frac{2}{m-1}(S_{1,t} - S_{2,t}) \qquad
+F_{t+h} = A_t + B_t \, h
+$$
+
+```{r}
+dma <- SMA(sma, n = 7)
+At <- 2 * sma - dma
+Bt <- (2 / (7 - 1)) * (sma - dma)
+pemulusan_dma <- At + Bt
+```
+
+```{r}
+ts.plot(train.ts, xlab = "Minggu ke-", ylab = "Beban Listrik (MW)",
+        col = "black", main = "Pemulusan DMA dengan m = 7")
+lines(pemulusan_dma, col = "darkgreen", lwd = 2)
+legend("bottomleft", legend = c("Data Aktual", "Pemulusan DMA"),
+       col = c("black", "darkgreen"), lty = 1, cex = 0.8)
+```
+
+```{r}
+i <- length(train.ts)
+ramalan_dma <- At[i] + Bt[i] * (1:h)
+hasil[["DMA (m=7)"]] <- ukuran_akurasi(testing$Beban, ramalan_dma)
+round(hasil[["DMA (m=7)"]], 3)
+```
+
+# Single Exponential Smoothing (SES)
+
+SES memberikan bobot yang menurun secara eksponensial terhadap pengamatan yang lebih lama.
+
+$$
+S_t = \lambda X_t + (1 - \lambda) S_{t-1}, \qquad 0 < \lambda < 1
+$$
+
+Nilai $\lambda$ ditentukan secara optimum oleh fungsi `ses()` dengan meminimumkan galat.
+
+```{r}
+ses_model <- ses(train.ts, h = h)
+cat("Nilai alpha (lambda) optimum :", round(ses_model$model$par["alpha"], 4), "\n")
+```
+
+```{r}
+autoplot(ses_model) +
+  labs(x = "Minggu ke-", y = "Beban Listrik (MW)",
+       title = "Peramalan dengan Single Exponential Smoothing") +
+  theme_bw()
+```
+
+```{r}
+ramalan_ses <- as.numeric(ses_model$mean)
+hasil[["SES"]] <- ukuran_akurasi(testing$Beban, ramalan_ses)
+round(hasil[["SES"]], 3)
+```
+
+Nilai $\lambda$ yang kecil menunjukkan pemulusan yang kuat, sehingga ramalan yang dihasilkan mendekati rata-rata data latih dan bersifat datar.
+
+# Double Exponential Smoothing (DES)
+
+DES melakukan pemulusan dua tahap, yaitu untuk komponen aras (*level*) dan komponen tren.
+
+$$
+S_t = \lambda X_t + (1-\lambda)(S_{t-1} + b_{t-1})
+$$
+
+$$
+b_t = \gamma (S_t - S_{t-1}) + (1 - \gamma) b_{t-1}
+$$
+
+$$
+F_{t+h} = S_t + b_t \, h
+$$
+
+```{r}
+des_model <- holt(train.ts, h = h)
+cat("Alpha :", round(des_model$model$par["alpha"], 4),
+    "  Beta :", round(des_model$model$par["beta"], 4), "\n")
+```
+
+```{r}
+autoplot(des_model) +
+  labs(x = "Minggu ke-", y = "Beban Listrik (MW)",
+       title = "Peramalan dengan Double Exponential Smoothing") +
+  theme_bw()
+```
+
+```{r}
+ramalan_des <- as.numeric(des_model$mean)
+hasil[["DES"]] <- ukuran_akurasi(testing$Beban, ramalan_des)
+round(hasil[["DES"]], 3)
+```
+
+# Holt-Winters
+
+Metode Holt-Winters menggunakan tiga persamaan pemulusan, yaitu untuk aras $(L_t)$, tren $(B_t)$, dan musiman $(S_t)$, dengan parameter pemulusan $\alpha$, $\beta$, dan $\gamma$. Metode ini terbagi menjadi dua jenis, yaitu aditif dan multiplikatif.
+
+## Holt-Winters Aditif
+
+Model aditif digunakan apabila amplitudo fluktuasi musiman relatif tetap.
+
+$$
+L_t = \alpha(Y_t - S_{t-m}) + (1-\alpha)(L_{t-1} + B_{t-1})
+$$
+
+$$
+B_t = \gamma(L_t - L_{t-1}) + (1-\gamma)B_{t-1}
+$$
+
+$$
+S_t = \delta(Y_t - L_t) + (1-\delta)S_{t-m}
+$$
+
+$$
+\hat{Y}_{t+h} = L_t + B_t \, h + S_{t+h-m}
+$$
+
+```{r}
+hw_aditif <- HoltWinters(train.ts, seasonal = "additive")
+cat("Alpha :", round(hw_aditif$alpha, 4),
+    "  Beta :", round(hw_aditif$beta, 4),
+    "  Gamma :", round(hw_aditif$gamma, 4), "\n")
+```
+
+```{r}
+plot(hw_aditif, main = "Pemulusan Holt-Winters Aditif",
+     xlab = "Minggu ke-", ylab = "Beban Listrik (MW)")
+```
+
+```{r}
+ramal_hwa <- forecast(hw_aditif, h = h)
+ramalan_hwa <- as.numeric(ramal_hwa$mean)
+hasil[["Holt-Winters Aditif"]] <- ukuran_akurasi(testing$Beban, ramalan_hwa)
+round(hasil[["Holt-Winters Aditif"]], 3)
+```
+
+## Holt-Winters Multiplikatif
+
+Model multiplikatif digunakan apabila amplitudo fluktuasi musiman berubah sebanding dengan aras data.
+
+$$
+L_t = \alpha\left(\frac{Y_t}{S_{t-m}}\right) + (1-\alpha)(L_{t-1} + B_{t-1})
+$$
+
+$$
+S_t = \delta\left(\frac{Y_t}{L_t}\right) + (1-\delta)S_{t-m}
+$$
+
+$$
+\hat{Y}_{t+h} = (L_t + B_t \, h)\, S_{t+h-m}
+$$
+
+```{r}
+hw_multi <- HoltWinters(train.ts, seasonal = "multiplicative")
+cat("Alpha :", round(hw_multi$alpha, 4),
+    "  Beta :", round(hw_multi$beta, 4),
+    "  Gamma :", round(hw_multi$gamma, 4), "\n")
+```
+
+```{r}
+plot(hw_multi, main = "Pemulusan Holt-Winters Multiplikatif",
+     xlab = "Minggu ke-", ylab = "Beban Listrik (MW)")
+```
+
+```{r}
+ramal_hwm <- forecast(hw_multi, h = h)
+ramalan_hwm <- as.numeric(ramal_hwm$mean)
+hasil[["Holt-Winters Multiplikatif"]] <- ukuran_akurasi(testing$Beban, ramalan_hwm)
+round(hasil[["Holt-Winters Multiplikatif"]], 3)
+```
+
+# Perbandingan Kinerja Metode
+
+## Tabel Perbandingan
+
+```{r}
+tabel <- do.call(rbind, hasil)
+tabel_tampil <- data.frame(
+  Metode = rownames(tabel),
+  SSE    = formatC(tabel[, "SSE"], format = "e", digits = 3),
+  MSE    = formatC(tabel[, "MSE"], format = "e", digits = 3),
+  RMSE   = round(tabel[, "RMSE"], 2),
+  MAPE   = round(tabel[, "MAPE"], 3),
+  row.names = NULL
+)
+knitr::kable(tabel_tampil, align = "lrrrr",
+             caption = "Perbandingan ukuran akurasi keenam metode pemulusan pada data uji")
+```
+
+```{r}
+terbaik <- rownames(tabel)[which.min(tabel[, "MAPE"])]
+cat("Metode terbaik berdasarkan MAPE terkecil :", terbaik, "\n")
+cat("Nilai MAPE                               :", round(min(tabel[, "MAPE"]), 3), "%\n")
+```
+
+## Perbandingan Secara Visual
+
+```{r fig.height=5}
+par(mar = c(5, 12, 4, 2))
+barplot(sort(tabel[, "MAPE"], decreasing = TRUE), horiz = TRUE, las = 1,
+        col = "steelblue", xlab = "MAPE (%)",
+        main = "Perbandingan MAPE Antarmetode", cex.names = 0.8)
+```
+
+```{r}
+plot(testing$Tanggal, testing$Beban, type = "l", lwd = 2, col = "black",
+     xlab = "Tanggal", ylab = "Beban Listrik (MW)",
+     main = "Perbandingan Ramalan terhadap Data Uji",
+     ylim = range(c(testing$Beban, ramalan_hwm, ramalan_hwa, ramalan_sma)))
+lines(testing$Tanggal, ramalan_hwm, col = "red", lwd = 2)
+lines(testing$Tanggal, ramalan_hwa, col = "blue", lwd = 2, lty = 2)
+lines(testing$Tanggal, ramalan_sma, col = "darkgreen", lwd = 2, lty = 3)
+legend("bottomleft",
+       legend = c("Data Aktual", "Holt-Winters Multiplikatif",
+                  "Holt-Winters Aditif", "SMA"),
+       col = c("black", "red", "blue", "darkgreen"),
+       lty = c(1, 1, 2, 3), lwd = 2, cex = 0.7)
+```
+
+# Pembahasan
+
+Berdasarkan tabel perbandingan, **Holt-Winters Multiplikatif merupakan metode terbaik** untuk data beban listrik Jerman tahun 2023, dengan nilai MAPE sekitar 5,97%. Menurut kriteria umum, nilai MAPE di bawah 10% tergolong akurasi yang sangat baik. Urutan kinerja keenam metode dari yang terbaik hingga terburuk adalah Holt-Winters Multiplikatif, Holt-Winters Aditif, SMA, SES, DMA, dan DES.
+
+Terdapat tiga hal yang menjelaskan hasil tersebut.
+
+**Pertama, hanya Holt-Winters yang mengakomodasi komponen musiman.** Hasil eksplorasi menunjukkan beban listrik hari Minggu sekitar 21% lebih rendah dibandingkan hari Rabu, dan pola ini berulang setiap minggu sepanjang tahun. SMA, DMA, SES, dan DES sama sekali tidak memiliki komponen musiman dalam persamaannya, sehingga keempatnya tidak mampu menangkap perbedaan sistematis antara hari kerja dan akhir pekan. Kegagalan ini bersifat struktural, bukan sekadar persoalan pemilihan parameter.
+
+**Kedua, metode yang mengekstrapolasi tren justru menghasilkan galat terbesar.** DES memperoleh MAPE sekitar 57% dan DMA sekitar 19%, jauh lebih buruk daripada SMA dan SES yang menghasilkan ramalan datar. Hal ini terjadi karena kedua metode tersebut memproyeksikan kemiringan tren dari akhir data latih secara linear ke seluruh horizon peramalan. Pada data ini tren tersebut tidak berlanjut pada data uji, sehingga ramalan menyimpang semakin jauh seiring bertambahnya horizon. Temuan ini menegaskan bahwa metode yang lebih rumit tidak otomatis lebih akurat apabila asumsi pola datanya tidak terpenuhi.
+
+**Ketiga, model multiplikatif sedikit lebih unggul dibandingkan model aditif.** Selisih MAPE keduanya sekitar satu poin persen. Hal ini masuk akal secara teknis karena besarnya penurunan beban pada akhir pekan cenderung sebanding dengan tingkat konsumsi keseluruhan. Ketika beban total meningkat pada musim dingin, selisih absolut antara hari kerja dan akhir pekan juga ikut membesar. Karakteristik seperti ini lebih tepat dimodelkan secara multiplikatif daripada aditif.
+
+Sebagai catatan, data uji mencakup periode akhir Oktober hingga 31 Desember 2023 yang di dalamnya terdapat libur Natal dan Tahun Baru. Pada periode tersebut aktivitas industri menurun drastis sehingga beban listrik menyimpang dari pola mingguan yang biasa. Kondisi ini turut menaikkan nilai galat pada seluruh metode, termasuk Holt-Winters. Penanganan efek hari libur melalui peubah dummy berpotensi memperbaiki akurasi pada penelitian lanjutan.
+
+# Kesimpulan
+
+1. Data beban listrik Jerman tahun 2023 sebanyak 365 observasi memiliki **pola musiman mingguan yang kuat**, dengan beban akhir pekan sekitar 21% lebih rendah dibandingkan hari kerja.
+
+2. Dari enam metode pemulusan yang dibandingkan, **Holt-Winters Multiplikatif merupakan metode terbaik** dengan nilai SSE, MSE, RMSE, dan MAPE terkecil. Nilai MAPE sekitar 5,97% tergolong kategori akurasi sangat baik.
+
+3. Keunggulan Holt-Winters disebabkan oleh kemampuannya memodelkan komponen musiman secara eksplisit, yang tidak dimiliki oleh SMA, DMA, SES, maupun DES.
+
+4. Metode DES dan DMA menghasilkan akurasi terburuk karena mengekstrapolasi tren secara linear pada data yang sebenarnya berpola musiman, bukan berpola tren.
+
+5. Untuk data beban listrik harian, **pemilihan metode sebaiknya didasarkan pada karakteristik pola data**, bukan pada tingkat kerumitan metode.
