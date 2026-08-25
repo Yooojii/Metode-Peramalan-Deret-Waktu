@@ -1,0 +1,365 @@
+---
+title: "Analisis Tambahan - Shira Pramudita"
+subtitle: "Metode Pemulusan pada Data Beban Listrik Jerman Lengkap 2021-2025"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: bootstrap
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 9, fig.height = 4.5)
+```
+
+# Pendahuluan
+
+## Kedudukan Analisis Ini
+
+Dokumen ini merupakan **analisis tambahan** di luar Tugas Pertemuan 2. Pada tugas utama (`Tugas-Pertemuan-2.html`), analisis dilakukan pada bagian data yang menjadi jatah masing-masing anggota kelompok, yaitu **tahun 2023 sebanyak 365 observasi**.
+
+Dokumen ini menganalisis **keseluruhan gugus data kelompok**, yaitu 1.826 observasi harian dari 1 Januari 2021 hingga 31 Desember 2025, dengan dua tujuan:
+
+1. Memeriksa kinerja keenam metode pemulusan pada deret yang jauh lebih panjang.
+2. Menguji **apakah metode terbaik tetap sama** apabila diterapkan pada tahun-tahun yang berbeda.
+
+Tujuan kedua penting karena pada tugas utama setiap anggota kelompok menganalisis potongan tahun yang berlainan. Apabila metode pemenangnya konsisten, hal itu menunjukkan bahwa karakteristik data memang stabil sepanjang periode pengamatan.
+
+## Deskripsi Data
+
+Peubah yang dianalisis adalah **beban listrik harian Jerman (*daily electricity load*)** dalam satuan megawatt (MW), yaitu total konsumsi listrik nasional per hari.
+
+**Sumber data:** Energy-Charts, Fraunhofer Institute for Solar Energy Systems (ISE). Data asli bersumber dari Bundesnetzagentur | SMARD.de dengan lisensi CC BY 4.0, tersedia pada <https://www.energy-charts.info/>. Data mentah tersedia pada frekuensi 15 menit, kemudian diagregasi menjadi rata-rata harian.
+
+# Library
+
+```{r}
+library(forecast)
+library(TTR)
+library(graphics)
+library(ggplot2)
+```
+
+# Impor Data
+
+```{r}
+data <- read.csv("Data-Beban-Listrik-Jerman-2021-2025.csv")
+data$Tanggal <- as.Date(data$Tanggal)
+data$Tahun <- format(data$Tanggal, "%Y")
+head(data)
+```
+
+```{r}
+cat("Jumlah observasi :", nrow(data), "\n")
+cat("Periode          :", format(min(data$Tanggal)), "s.d.", format(max(data$Tanggal)), "\n")
+cat("Data hilang      :", sum(is.na(data$Beban)), "\n")
+```
+
+# Eksplorasi Data
+
+## Statistik Deskriptif
+
+```{r}
+summary(data$Beban)
+```
+
+```{r}
+ringkasan <- data.frame(
+  Tahun     = names(tapply(data$Beban, data$Tahun, length)),
+  n         = as.vector(tapply(data$Beban, data$Tahun, length)),
+  Rata_rata = round(as.vector(tapply(data$Beban, data$Tahun, mean)), 1),
+  Simpangan = round(as.vector(tapply(data$Beban, data$Tahun, sd)), 1),
+  Minimum   = round(as.vector(tapply(data$Beban, data$Tahun, min)), 1),
+  Maksimum  = round(as.vector(tapply(data$Beban, data$Tahun, max)), 1)
+)
+knitr::kable(ringkasan, caption = "Ringkasan beban listrik menurut tahun")
+```
+
+Rata-rata beban listrik menurun dari sekitar 57.600 MW pada 2021 menjadi 52.300 MW pada 2023, kemudian relatif stabil pada kisaran 53.000 MW. Penurunan ini berkaitan dengan krisis pasokan energi Eropa tahun 2022 yang mendorong penghematan konsumsi, serta perlambatan aktivitas industri sesudahnya.
+
+## Plot Deret Waktu
+
+```{r}
+data.ts <- ts(data$Beban, frequency = 7)
+ts.plot(data.ts, xlab = "Minggu ke-", ylab = "Beban Listrik (MW)",
+        main = "Beban Listrik Harian Jerman 2021-2025", col = "darkblue")
+```
+
+```{r fig.height=5}
+ggplot(data, aes(x = Tanggal, y = Beban)) +
+  geom_line(color = "steelblue", linewidth = 0.3) +
+  geom_smooth(method = "loess", span = 0.2, se = FALSE, color = "red") +
+  labs(x = "Tanggal", y = "Beban Listrik (MW)",
+       title = "Beban Listrik Harian Jerman 2021-2025",
+       subtitle = "Garis merah menunjukkan kecenderungan jangka menengah") +
+  theme_bw()
+```
+
+Terlihat pola musiman tahunan yang berulang, yaitu beban tinggi pada musim dingin dan rendah pada musim panas, disertai kecenderungan menurun pada tiga tahun pertama.
+
+## Pola Musiman Mingguan
+
+```{r}
+urutan <- c("Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min")
+data$Hari <- factor(data$Hari, levels = urutan)
+rata_hari <- tapply(data$Beban, data$Hari, mean)
+round(rata_hari, 2)
+```
+
+```{r}
+barplot(rata_hari, col = "steelblue", ylim = c(0, 60000),
+        main = "Rata-rata Beban Listrik Menurut Hari (2021-2025)",
+        xlab = "Hari", ylab = "Beban Listrik (MW)")
+```
+
+```{r}
+boxplot(Beban ~ Hari, data = data, col = "lightblue",
+        main = "Sebaran Beban Listrik Menurut Hari",
+        xlab = "Hari", ylab = "Beban Listrik (MW)")
+```
+
+## Kestabilan Pola Mingguan Antartahun
+
+Pemeriksaan berikut menguji apakah pola mingguan tetap sama dari tahun ke tahun.
+
+```{r}
+tabel_hari <- round(tapply(data$Beban, list(data$Tahun, data$Hari), mean), 0)
+knitr::kable(tabel_hari, caption = "Rata-rata beban listrik (MW) menurut tahun dan hari")
+```
+
+```{r}
+rasio <- round(tabel_hari[, "Min"] / tabel_hari[, "Rab"] * 100, 1)
+knitr::kable(data.frame(Tahun = names(rasio), `Rasio Minggu terhadap Rabu (persen)` = as.vector(rasio),
+                        check.names = FALSE),
+             caption = "Beban hari Minggu sebagai persentase beban hari Rabu")
+```
+
+Rasio beban hari Minggu terhadap hari Rabu konsisten berada di kisaran 79--81% pada seluruh tahun. Artinya **pola musiman mingguan bersifat stabil** dan tidak berubah sepanjang lima tahun pengamatan.
+
+## Dekomposisi
+
+```{r fig.height=6}
+plot(decompose(data.ts))
+```
+
+# Ukuran Akurasi
+
+```{r}
+ukuran_akurasi <- function(aktual, ramalan) {
+  galat <- aktual - ramalan
+  c(SSE  = sum(galat^2),
+    MSE  = mean(galat^2),
+    RMSE = sqrt(mean(galat^2)),
+    MAPE = mean(abs(galat / aktual)) * 100)
+}
+```
+
+Fungsi berikut menjalankan keenam metode pemulusan sekaligus pada suatu deret, sehingga dapat digunakan berulang kali baik pada deret penuh maupun pada setiap tahun.
+
+```{r}
+jalankan_semua <- function(beban, m = 7, proporsi_latih = 0.8) {
+  n <- length(beban)
+  ntr <- floor(proporsi_latih * n)
+  latih <- beban[1:ntr]
+  uji   <- beban[(ntr + 1):n]
+  latih.ts <- ts(latih, frequency = m)
+  h <- length(uji)
+
+  hasil <- list()
+
+  # Single Moving Average
+  sma <- SMA(latih.ts, n = m)
+  hasil[["SMA (m=7)"]] <- ukuran_akurasi(uji, rep(tail(sma[!is.na(sma)], 1), h))
+
+  # Double Moving Average
+  dma <- SMA(sma, n = m)
+  At <- 2 * sma - dma
+  Bt <- (2 / (m - 1)) * (sma - dma)
+  i <- length(latih)
+  hasil[["DMA (m=7)"]] <- ukuran_akurasi(uji, At[i] + Bt[i] * (1:h))
+
+  # Single Exponential Smoothing
+  hasil[["SES"]] <- ukuran_akurasi(uji, as.numeric(ses(latih.ts, h = h)$mean))
+
+  # Double Exponential Smoothing
+  hasil[["DES"]] <- ukuran_akurasi(uji, as.numeric(holt(latih.ts, h = h)$mean))
+
+  # Holt-Winters Aditif
+  hwa <- HoltWinters(latih.ts, seasonal = "additive")
+  hasil[["Holt-Winters Aditif"]] <- ukuran_akurasi(uji, as.numeric(forecast(hwa, h = h)$mean))
+
+  # Holt-Winters Multiplikatif
+  hwm <- HoltWinters(latih.ts, seasonal = "multiplicative")
+  hasil[["Holt-Winters Multiplikatif"]] <- ukuran_akurasi(uji, as.numeric(forecast(hwm, h = h)$mean))
+
+  do.call(rbind, hasil)
+}
+```
+
+# Analisis pada Deret Penuh
+
+## Pembagian Data
+
+```{r}
+n <- nrow(data)
+n_train <- floor(0.8 * n)
+training <- data[1:n_train, ]
+testing  <- data[(n_train + 1):n, ]
+
+cat("Data latih :", nrow(training), "observasi (",
+    format(min(training$Tanggal)), "s.d.", format(max(training$Tanggal)), ")\n")
+cat("Data uji   :", nrow(testing), "observasi (",
+    format(min(testing$Tanggal)), "s.d.", format(max(testing$Tanggal)), ")\n")
+```
+
+Perlu dicatat bahwa horizon peramalan di sini mencapai **366 hari**, yaitu sekitar satu tahun penuh. Horizon ini jauh lebih panjang dibandingkan tugas utama yang hanya 73 hari.
+
+```{r}
+ggplot() +
+  geom_line(data = training, aes(x = Tanggal, y = Beban, col = "Data Latih"), linewidth = 0.3) +
+  geom_line(data = testing,  aes(x = Tanggal, y = Beban, col = "Data Uji"), linewidth = 0.3) +
+  labs(x = "Tanggal", y = "Beban Listrik (MW)",
+       title = "Pembagian Data Latih dan Data Uji pada Deret Penuh") +
+  scale_colour_manual(name = "Keterangan:",
+                      breaks = c("Data Latih", "Data Uji"),
+                      values = c("blue", "red")) +
+  theme_bw() + theme(legend.position = "bottom")
+```
+
+## Hasil Keenam Metode
+
+```{r}
+tabel_penuh <- jalankan_semua(data$Beban)
+tampil <- data.frame(
+  Metode = rownames(tabel_penuh),
+  SSE    = formatC(tabel_penuh[, "SSE"], format = "e", digits = 3),
+  MSE    = formatC(tabel_penuh[, "MSE"], format = "e", digits = 3),
+  RMSE   = round(tabel_penuh[, "RMSE"], 2),
+  MAPE   = round(tabel_penuh[, "MAPE"], 3),
+  row.names = NULL
+)
+knitr::kable(tampil, align = "lrrrr",
+             caption = "Ukuran akurasi keenam metode pada deret penuh 2021-2025 (horizon 366 hari)")
+```
+
+```{r}
+cat("Metode terbaik :", rownames(tabel_penuh)[which.min(tabel_penuh[, "MAPE"])], "\n")
+cat("MAPE           :", round(min(tabel_penuh[, "MAPE"]), 3), "%\n")
+```
+
+```{r fig.height=5}
+par(mar = c(5, 12, 4, 2))
+barplot(sort(tabel_penuh[, "MAPE"], decreasing = TRUE), horiz = TRUE, las = 1,
+        col = "steelblue", xlab = "MAPE (%)",
+        main = "Perbandingan MAPE pada Deret Penuh", cex.names = 0.8)
+```
+
+Nilai MAPE metode DMA mencapai angka yang sangat besar sehingga mendominasi skala grafik. Grafik berikut mengeluarkan DMA agar perbandingan kelima metode lainnya terlihat lebih jelas.
+
+```{r fig.height=5}
+tanpa_dma <- tabel_penuh[rownames(tabel_penuh) != "DMA (m=7)", ]
+par(mar = c(5, 12, 4, 2))
+barplot(sort(tanpa_dma[, "MAPE"], decreasing = TRUE), horiz = TRUE, las = 1,
+        col = "seagreen", xlab = "MAPE (%)",
+        main = "Perbandingan MAPE tanpa DMA", cex.names = 0.8)
+```
+
+# Konsistensi Metode Terbaik Antartahun
+
+Bagian ini menerapkan keenam metode secara terpisah pada masing-masing tahun, dengan pembagian data latih dan uji 80% : 20% di dalam setiap tahun. Dengan demikian setiap tahun diperlakukan seperti potongan data yang dianalisis oleh masing-masing anggota kelompok.
+
+```{r}
+tahun_list <- sort(unique(data$Tahun))
+mape_tahun <- NULL
+
+for (thn in tahun_list) {
+  sub <- data[data$Tahun == thn, ]
+  hasil_thn <- jalankan_semua(sub$Beban)
+  mape_tahun <- rbind(mape_tahun, round(hasil_thn[, "MAPE"], 3))
+}
+rownames(mape_tahun) <- tahun_list
+knitr::kable(mape_tahun,
+             caption = "Nilai MAPE (persen) keenam metode pada setiap tahun")
+```
+
+```{r}
+terbaik_tahun <- data.frame(
+  Tahun         = tahun_list,
+  Metode_Terbaik = colnames(mape_tahun)[apply(mape_tahun, 1, which.min)],
+  MAPE_Terkecil = round(apply(mape_tahun, 1, min), 3),
+  row.names = NULL
+)
+knitr::kable(terbaik_tahun, caption = "Metode terbaik pada setiap tahun")
+```
+
+```{r fig.height=5}
+warna <- c("grey60", "grey40", "grey75", "grey25", "steelblue", "firebrick")
+barplot(t(mape_tahun), beside = TRUE, col = warna,
+        ylim = c(0, max(mape_tahun) * 1.15),
+        xlab = "Tahun", ylab = "MAPE (%)",
+        main = "Perbandingan MAPE Antarmetode pada Setiap Tahun")
+legend("topleft", legend = colnames(mape_tahun), fill = warna, cex = 0.65, ncol = 2)
+```
+
+```{r fig.height=5}
+matplot(mape_tahun[, c("Holt-Winters Aditif", "Holt-Winters Multiplikatif")],
+        type = "b", pch = 16, lty = 1, lwd = 2, col = c("steelblue", "firebrick"),
+        xaxt = "n", xlab = "Tahun", ylab = "MAPE (%)",
+        main = "Perbandingan Holt-Winters Aditif dan Multiplikatif")
+axis(1, at = 1:length(tahun_list), labels = tahun_list)
+legend("topleft", legend = c("Holt-Winters Aditif", "Holt-Winters Multiplikatif"),
+       col = c("steelblue", "firebrick"), lty = 1, pch = 16, cex = 0.8)
+```
+
+# Pembahasan
+
+## Holt-Winters Konsisten Menjadi yang Terbaik
+
+Hasil paling penting dari analisis ini adalah bahwa **salah satu varian Holt-Winters selalu menjadi metode terbaik**, baik pada deret penuh maupun pada kelima tahun secara terpisah. Tidak ada satu pun tahun yang dimenangkan oleh SMA, DMA, SES, maupun DES.
+
+Konsistensi ini bukan kebetulan. Pemeriksaan pola mingguan menunjukkan rasio beban hari Minggu terhadap hari Rabu bertahan pada kisaran 79--81% di seluruh tahun. Struktur musiman data tidak berubah, sehingga metode yang memodelkan musiman secara eksplisit selalu unggul. Keempat metode lainnya tidak memiliki komponen musiman dalam persamaannya, sehingga kekalahannya bersifat struktural dan tidak dapat diperbaiki melalui pemilihan parameter.
+
+Temuan ini juga berarti bahwa apabila seluruh anggota kelompok menganalisis potongan tahun yang berbeda, **kesimpulan yang diperoleh seharusnya seragam**.
+
+## Panjang Horizon Sangat Menentukan Metode Ekstrapolasi Tren
+
+Perbandingan antara analisis ini dan tugas utama memperlihatkan hal yang menarik pada metode DMA:
+
+| Analisis | Panjang horizon | MAPE DMA |
+|---|---|---|
+| Tugas utama (2023 saja) | 73 hari | sekitar 19% |
+| Deret penuh 2021-2025 | 366 hari | sekitar 219% |
+
+DMA dan DES meramal dengan memproyeksikan kemiringan tren secara linear, yaitu $F_{t+h} = A_t + B_t h$. Karena galat proyeksi tumbuh sebanding dengan $h$, semakin panjang horizon peramalan semakin jauh ramalan menyimpang. Pada horizon satu tahun penuh, penyimpangannya menjadi sangat besar.
+
+Sebaliknya, metode yang menghasilkan ramalan datar seperti SMA dan SES relatif tahan terhadap perpanjangan horizon, meskipun akurasinya tidak pernah menjadi yang terbaik. Hal ini menunjukkan bahwa **metode yang lebih rumit tidak otomatis lebih akurat**, dan kesesuaian asumsi pola data jauh lebih menentukan daripada kerumitan metode.
+
+## Kegagalan DES pada Tahun 2023 Bersifat Khusus
+
+Pada tugas utama, DES menghasilkan MAPE sekitar 57% untuk data tahun 2023. Tabel MAPE antartahun menunjukkan bahwa pada tahun-tahun lain DES hanya menghasilkan MAPE sekitar 9--11%.
+
+Dengan demikian, kegagalan besar DES pada 2023 **bukan merupakan sifat umum metode tersebut**, melainkan akibat kondisi khusus pada batas antara data latih dan data uji tahun itu. Kemiringan tren yang terbentuk di akhir data latih 2023 kebetulan cukup curam dan tidak berlanjut pada data uji, sehingga ramalannya menyimpang jauh. Analisis pada satu potongan data saja berpotensi menghasilkan kesimpulan yang menyesatkan apabila kondisi seperti ini tidak diperiksa.
+
+## Aditif dan Multiplikatif Hampir Setara
+
+Kedua varian Holt-Winters saling bergantian menjadi yang terbaik. Varian multiplikatif unggul pada 2021 dan 2023, sedangkan varian aditif unggul pada 2022, 2024, dan 2025. Selisih MAPE keduanya umumnya berada di bawah satu poin persen.
+
+Pada deret penuh, varian multiplikatif unggul lebih meyakinkan. Hal ini masuk akal karena pada periode yang lebih panjang aras data berubah cukup besar, yaitu dari sekitar 57.600 MW pada 2021 menjadi sekitar 53.000 MW pada 2025. Ketika aras berubah, amplitudo fluktuasi musiman ikut berubah secara proporsional, dan kondisi seperti itu lebih tepat dimodelkan secara multiplikatif.
+
+Untuk keperluan praktis, kedua varian dapat dianggap setara pada data ini, dengan sedikit keunggulan pada varian multiplikatif untuk peramalan jangka panjang.
+
+# Kesimpulan
+
+1. Data beban listrik Jerman 2021--2025 sebanyak 1.826 observasi memiliki **pola musiman mingguan yang stabil**, dengan beban hari Minggu konsisten berada pada kisaran 79--81% dari beban hari Rabu di seluruh tahun.
+
+2. Pada deret penuh, **Holt-Winters Multiplikatif merupakan metode terbaik** dengan MAPE sekitar 7,95%.
+
+3. **Holt-Winters selalu menjadi metode terbaik pada setiap tahun** yang diuji, sehingga kesimpulan tugas ini bersifat konsisten dan tidak bergantung pada potongan data yang dianalisis.
+
+4. Metode yang mengekstrapolasi tren, yaitu DMA dan DES, sangat peka terhadap panjang horizon peramalan. MAPE DMA meningkat dari sekitar 19% pada horizon 73 hari menjadi sekitar 219% pada horizon 366 hari.
+
+5. Pemilihan metode pemulusan sebaiknya didasarkan pada **kesesuaian dengan pola data** dan **panjang horizon peramalan**, bukan pada tingkat kerumitan metode.
