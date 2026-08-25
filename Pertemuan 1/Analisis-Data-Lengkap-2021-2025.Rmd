@@ -20,7 +20,7 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
 
 ## Kedudukan Analisis Ini
 
-Dokumen ini merupakan **analisis tambahan** di luar Tugas Pertemuan 2. Pada tugas utama (`Tugas-Pertemuan-2.html`), analisis dilakukan pada bagian data yang menjadi jatah masing-masing anggota kelompok, yaitu **tahun 2023 sebanyak 365 observasi**.
+Dokumen ini merupakan **analisis tambahan** di luar Tugas Pertemuan 2. Pada tugas utama (`Tugas-Pertemuan-1.html`), analisis dilakukan pada bagian data yang menjadi jatah masing-masing anggota kelompok, yaitu **tahun 2023 sebanyak 365 observasi**.
 
 Dokumen ini menganalisis **keseluruhan gugus data kelompok**, yaitu 1.826 observasi harian dari 1 Januari 2021 hingga 31 Desember 2025, dengan dua tujuan:
 
