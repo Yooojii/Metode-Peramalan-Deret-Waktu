@@ -1,5 +1,5 @@
 ---
-title: "Tugas Pertemuan 2 - Shira Pramudita"
+title: "Tugas Pertemuan 1 - Shira Pramudita"
 subtitle: "Perbandingan Metode Pemulusan pada Data Beban Listrik Jerman Tahun 2023"
 output:
   html_document:
