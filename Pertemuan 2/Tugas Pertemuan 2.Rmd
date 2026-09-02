@@ -1,0 +1,271 @@
+---
+title: "Tugas Praktikum: Pemodelan Regresi Deret Waktu"
+subtitle: "Autokorelasi Sisaan (Plot Sisaan & Durbin-Watson) dan Penanganannya (Cochrane-Orcutt)"
+author: "Muhammad Shira Pramudita - M0401241094"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    number_sections: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.align = "center")
+suppressPackageStartupMessages(library(lmtest))
+```
+
+# Pendahuluan
+
+Laporan ini melakukan **pemodelan regresi deret waktu** terhadap dua gugus data:
+
+1. **Market Share terhadap Price** (20 periode)
+2. **Sales terhadap Advertising** (tahun 1975–2014, 40 observasi)
+
+Untuk setiap model, dilakukan:
+
+- Pendugaan model regresi linear sederhana (OLS)
+- Pemeriksaan autokorelasi sisaan melalui **plot sisaan** dan **uji Durbin-Watson**
+- Jika terdapat autokorelasi, dilakukan penanganan dengan **metode Cochrane-Orcutt**
+
+# Fungsi Cochrane-Orcutt (Manual, Iteratif)
+
+Metode Cochrane-Orcutt menduga koefisien autokorelasi $\rho$ dari sisaan OLS, lalu mentransformasi data:
+
+$$Y_t^* = Y_t - \rho Y_{t-1} \qquad X_t^* = X_t - \rho X_{t-1}$$
+
+kemudian meregresikan $Y_t^*$ terhadap $X_t^*$. Proses ini diulang (iteratif) hingga $\rho$ konvergen.
+
+```{r co-function}
+cochrane_orcutt <- function(y, x, tol = 1e-6, max_iter = 50) {
+  n <- length(y)
+  rho <- 0
+  for (iter in 1:max_iter) {
+    y_star <- y[2:n] - rho * y[1:(n - 1)]
+    x_star <- x[2:n] - rho * x[1:(n - 1)]
+    fit_star <- lm(y_star ~ x_star)
+    b0_star <- coef(fit_star)[1]
+    b1_star <- coef(fit_star)[2]
+    b0 <- b0_star / (1 - rho)
+    b1 <- b1_star
+
+    resid_orig <- y - (b0 + b1 * x)
+    rho_new <- sum(resid_orig[2:n] * resid_orig[1:(n - 1)]) /
+      sum(resid_orig[1:(n - 1)]^2)
+
+    if (abs(rho_new - rho) < tol) {
+      rho <- rho_new
+      break
+    }
+    rho <- rho_new
+  }
+  list(rho = rho, b0 = b0, b1 = b1, iterations = iter,
+       fit_star = fit_star, y_star = y_star, x_star = x_star)
+}
+```
+
+# Dataset 1: Market Share vs Price
+
+## Data
+
+```{r data1}
+data1 <- data.frame(
+  Period = 1:20,
+  MarketShare = c(3.63, 4.20, 3.33, 4.54, 2.89, 4.87, 4.90, 5.29, 6.18, 7.20,
+                  7.25, 6.09, 6.80, 8.65, 8.43, 8.29, 7.18, 7.90, 8.45, 8.23),
+  Price = c(0.97, 0.95, 0.99, 0.91, 0.98, 0.90, 0.89, 0.86, 0.85, 0.82,
+            0.79, 0.83, 0.81, 0.77, 0.76, 0.80, 0.83, 0.79, 0.76, 0.78)
+)
+data1
+```
+
+## Model Regresi Awal (OLS)
+
+```{r model1}
+fit1 <- lm(MarketShare ~ Price, data = data1)
+summary(fit1)
+```
+
+Model dugaan: **MarketShare = `r round(coef(fit1)[1],3)` + (`r round(coef(fit1)[2],3)`) x Price**
+
+## Pemeriksaan Autokorelasi Sisaan
+
+### Plot Sisaan
+
+```{r plot-resid1, fig.width=9, fig.height=4.5}
+par(mfrow = c(1, 2))
+plot(data1$Period, resid(fit1), type = "o", pch = 16, col = "steelblue",
+     xlab = "Periode", ylab = "Sisaan", main = "Sisaan vs Waktu")
+abline(h = 0, col = "red", lty = 2)
+plot(fitted(fit1), resid(fit1), pch = 16, col = "steelblue",
+     xlab = "Nilai Dugaan", ylab = "Sisaan", main = "Sisaan vs Fitted")
+abline(h = 0, col = "red", lty = 2)
+```
+
+Plot sisaan terhadap waktu menunjukkan pola bergelombang (tidak acak di sekitar nol) — indikasi awal adanya autokorelasi.
+
+### Uji Durbin-Watson
+
+```{r dw1}
+dw1 <- dwtest(fit1)
+dw1
+```
+
+`r if (dw1$p.value < 0.05) "Karena **p-value < 0.05**, maka **tolak H0** -> terdapat autokorelasi positif pada sisaan." else "Karena **p-value >= 0.05**, maka **gagal tolak H0** -> tidak ada autokorelasi signifikan."`
+
+## Penanganan Autokorelasi: Cochrane-Orcutt
+
+```{r co1, eval=(dw1$p.value < 0.05)}
+co1 <- cochrane_orcutt(data1$MarketShare, data1$Price)
+cat("Rho terestimasi   :", round(co1$rho, 5), "\n")
+cat("Jumlah iterasi     :", co1$iterations, "\n")
+cat("Intercept baru (b0):", round(co1$b0, 5), "\n")
+cat("Slope baru (b1)    :", round(co1$b1, 5), "\n")
+
+summary(co1$fit_star)
+```
+
+Model setelah koreksi: **MarketShare = `r round(co1$b0,3)` + (`r round(co1$b1,3)`) x Price**, dengan $\rho$ = `r round(co1$rho,4)`.
+
+### Plot Sisaan Setelah Koreksi
+
+```{r plot-resid1-co, fig.width=9, fig.height=4.5, eval=(dw1$p.value < 0.05)}
+par(mfrow = c(1, 2))
+plot(seq_along(co1$y_star), resid(co1$fit_star), type = "o", pch = 16, col = "darkgreen",
+     xlab = "Periode (t=2..n)", ylab = "Sisaan", main = "Sisaan vs Waktu (setelah CO)")
+abline(h = 0, col = "red", lty = 2)
+plot(fitted(co1$fit_star), resid(co1$fit_star), pch = 16, col = "darkgreen",
+     xlab = "Nilai Dugaan", ylab = "Sisaan", main = "Sisaan vs Fitted (setelah CO)")
+abline(h = 0, col = "red", lty = 2)
+```
+
+### Uji Durbin-Watson Setelah Koreksi
+
+```{r dw1-co, eval=(dw1$p.value < 0.05)}
+dw1_co <- dwtest(co1$fit_star)
+dw1_co
+```
+
+`r if (exists("dw1_co")) { if (dw1_co$p.value < 0.05) "**Masih terdapat autokorelasi** setelah koreksi." else "**Autokorelasi sisaan sudah teratasi** setelah koreksi Cochrane-Orcutt." } else ""`
+
+---
+
+# Dataset 2: Sales vs Advertising
+
+## Data
+
+```{r data2}
+data2 <- data.frame(
+  Year = 1975:2014,
+  Sales = c(11.7, 12.0, 12.3, 12.8, 13.1, 13.6, 13.9, 14.4, 14.7, 15.3,
+            15.5, 15.8, 16.1, 16.6, 16.9, 16.7, 16.9, 17.4, 17.6, 17.9,
+            18.0, 17.9, 18.0, 18.2, 18.2, 18.3, 18.6, 19.2, 19.3, 19.5,
+            19.2, 19.3, 19.5, 20.0, 20.0, 19.9, 19.8, 19.9, 20.2, 21.0),
+  Advertising = c(9.4, 9.6, 10, 10.4, 10.8, 10.9, 11.7, 12.2, 12.5, 12.9,
+                  13.0, 13.2, 13.8, 14.2, 14.6, 14.4, 15.0, 15.4, 15.7, 15.9,
+                  15.9, 16.0, 16.3, 16.2, 16.8, 17.3, 17.6, 18.1, 18.3, 18.5,
+                  18.7, 18.9, 19.2, 20.0, 20.0, 20.3, 20.4, 21.0, 21.5, 22.1)
+)
+data2
+```
+
+## Model Regresi Awal (OLS)
+
+```{r model2}
+fit2 <- lm(Sales ~ Advertising, data = data2)
+summary(fit2)
+```
+
+Model dugaan: **Sales = `r round(coef(fit2)[1],3)` + (`r round(coef(fit2)[2],3)`) x Advertising**
+
+## Pemeriksaan Autokorelasi Sisaan
+
+### Plot Sisaan
+
+```{r plot-resid2, fig.width=9, fig.height=4.5}
+par(mfrow = c(1, 2))
+plot(data2$Year, resid(fit2), type = "o", pch = 16, col = "steelblue",
+     xlab = "Tahun", ylab = "Sisaan", main = "Sisaan vs Waktu")
+abline(h = 0, col = "red", lty = 2)
+plot(fitted(fit2), resid(fit2), pch = 16, col = "steelblue",
+     xlab = "Nilai Dugaan", ylab = "Sisaan", main = "Sisaan vs Fitted")
+abline(h = 0, col = "red", lty = 2)
+```
+
+Sisaan bergerak sangat mulus (naik-turun berkelanjutan, bukan acak) — indikasi kuat adanya autokorelasi positif, wajar karena data tahunan yang trending.
+
+### Uji Durbin-Watson
+
+```{r dw2}
+dw2 <- dwtest(fit2)
+dw2
+```
+
+`r if (dw2$p.value < 0.05) "Karena **p-value < 0.05**, maka **tolak H0** -> terdapat autokorelasi positif pada sisaan." else "Karena **p-value >= 0.05**, maka **gagal tolak H0** -> tidak ada autokorelasi signifikan."`
+
+## Penanganan Autokorelasi: Cochrane-Orcutt
+
+```{r co2, eval=(dw2$p.value < 0.05)}
+co2 <- cochrane_orcutt(data2$Sales, data2$Advertising)
+cat("Rho terestimasi   :", round(co2$rho, 5), "\n")
+cat("Jumlah iterasi     :", co2$iterations, "\n")
+cat("Intercept baru (b0):", round(co2$b0, 5), "\n")
+cat("Slope baru (b1)    :", round(co2$b1, 5), "\n")
+
+summary(co2$fit_star)
+```
+
+Model setelah koreksi: **Sales = `r round(co2$b0,3)` + (`r round(co2$b1,3)`) x Advertising**, dengan $\rho$ = `r round(co2$rho,4)`.
+
+### Plot Sisaan Setelah Koreksi
+
+```{r plot-resid2-co, fig.width=9, fig.height=4.5, eval=(dw2$p.value < 0.05)}
+par(mfrow = c(1, 2))
+plot(seq_along(co2$y_star), resid(co2$fit_star), type = "o", pch = 16, col = "darkgreen",
+     xlab = "Periode (t=2..n)", ylab = "Sisaan", main = "Sisaan vs Waktu (setelah CO)")
+abline(h = 0, col = "red", lty = 2)
+plot(fitted(co2$fit_star), resid(co2$fit_star), pch = 16, col = "darkgreen",
+     xlab = "Nilai Dugaan", ylab = "Sisaan", main = "Sisaan vs Fitted (setelah CO)")
+abline(h = 0, col = "red", lty = 2)
+```
+
+### Uji Durbin-Watson Setelah Koreksi
+
+```{r dw2-co, eval=(dw2$p.value < 0.05)}
+dw2_co <- dwtest(co2$fit_star)
+dw2_co
+```
+
+`r if (exists("dw2_co")) { if (dw2_co$p.value < 0.05) "**Masih terdapat autokorelasi** setelah koreksi." else "**Autokorelasi sisaan sudah teratasi** setelah koreksi Cochrane-Orcutt." } else ""`
+
+---
+
+# Kesimpulan
+
+```{r kesimpulan, results='asis', echo=FALSE}
+summarize_result <- function(name, fit, dw, co = NULL, dw_co = NULL) {
+  cat("### ", name, "\n\n", sep = "")
+  cat("- Model awal: DW = ", round(dw$statistic, 3),
+      ", p-value = ", format.pval(dw$p.value, digits = 4),
+      ifelse(dw$p.value < 0.05, " -> **ada autokorelasi**.", " -> tidak ada autokorelasi."), "\n", sep = "")
+  if (!is.null(co)) {
+    cat("- Setelah Cochrane-Orcutt ($\\rho$ = ", round(co$rho, 4), "): DW = ",
+        round(dw_co$statistic, 3), ", p-value = ", format.pval(dw_co$p.value, digits = 4),
+        ifelse(dw_co$p.value < 0.05, " -> masih ada autokorelasi.", " -> **autokorelasi teratasi**."),
+        "\n", sep = "")
+    cat("- Model akhir: Y = ", round(co$b0, 3), " + (", round(co$b1, 3), ") x X\n\n", sep = "")
+  }
+  cat("\n")
+}
+
+summarize_result("Market Share vs Price", fit1, dw1,
+                  if (exists("co1")) co1 else NULL,
+                  if (exists("dw1_co")) dw1_co else NULL)
+summarize_result("Sales vs Advertising", fit2, dw2,
+                  if (exists("co2")) co2 else NULL,
+                  if (exists("dw2_co")) dw2_co else NULL)
+```
+
+Pada kedua model regresi deret waktu, sisaan dari model OLS awal menunjukkan **autokorelasi positif yang signifikan** (dikonfirmasi baik dari plot sisaan yang berpola maupun uji Durbin-Watson dengan p-value < 0.05). Setelah dilakukan penanganan dengan **metode Cochrane-Orcutt**, autokorelasi pada sisaan berhasil diatasi (uji Durbin-Watson pada model transformasi menghasilkan p-value > 0.05), sehingga model hasil transformasi ini yang direkomendasikan untuk digunakan sebagai model akhir.
