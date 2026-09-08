@@ -1,0 +1,184 @@
+---
+title: "Latihan 2 Pertemuan 3"
+subtitle: "Pemodelan ARDL: Sales (Y) terhadap Advertising (X)"
+author: "Muhammad Shira Pramudita - NIM M0401241094"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    number_sections: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.align = "center")
+```
+
+# Pendahuluan
+
+Terdapat data penjualan (*Sales*, $Y_t$) dan biaya iklan (*Advertising*, $X_t$) suatu perusahaan selama 40 tahun (1975-2014). Tugas ini melakukan **pemodelan Autoregressive Distributed Lag (ARDL)** yang sesuai, mengikuti alur praktikum: fit model ARDL awal, cari orde $(p,q)$ optimum, lalu bandingkan untuk **menemukan model terbaik**.
+
+Model ARDL menggabungkan suku autoregresif (lag $Y$) dan lag terdistribusi (lag $X$):
+$$Y_t = \alpha + \phi_1 Y_{t-1} + \dots + \phi_p Y_{t-p} + \beta_0 X_t + \beta_1 X_{t-1} + \dots + \beta_q X_{t-q} + \varepsilon_t$$
+Model ini dapat memisahkan respon **jangka pendek** ($\beta_0$) dan **jangka panjang** (total multiplier) dari $Y$ terhadap perubahan $X$.
+
+# Packages
+
+```{r packages}
+suppressPackageStartupMessages({
+  library(dLagM)
+  library(nardl)
+  library(dynlm)
+  library(MLmetrics)
+  library(lmtest)
+  library(car)
+})
+```
+
+# Data
+
+```{r data}
+data <- data.frame(
+  t  = 1:40,
+  Yt = c(11.7,12.0,12.3,12.8,13.1,13.6,13.9,14.4,14.7,15.3,
+         15.5,15.8,16.1,16.6,16.9,16.7,16.9,17.4,17.6,17.9,
+         18.0,17.9,18.0,18.2,18.2,18.3,18.6,19.2,19.3,19.5,
+         19.2,19.3,19.5,20.0,20.0,19.9,19.8,19.9,20.2,21.0),
+  Xt = c(9.4,9.6,10,10.4,10.8,10.9,11.7,12.2,12.5,12.9,
+         13.0,13.2,13.8,14.2,14.6,14.4,15.0,15.4,15.7,15.9,
+         15.9,16.0,16.3,16.2,16.8,17.3,17.6,18.1,18.3,18.5,
+         18.7,18.9,19.2,20.0,20.0,20.3,20.4,21.0,21.5,22.1)
+)
+str(data)
+```
+
+```{r plot-data, fig.width=9, fig.height=4}
+par(mfrow = c(1, 2))
+plot(data$t, data$Yt, type = "o", pch = 16, col = "steelblue",
+     xlab = "t", ylab = "Sales", main = "Sales vs Waktu")
+plot(data$t, data$Xt, type = "o", pch = 16, col = "darkorange",
+     xlab = "t", ylab = "Advertising", main = "Advertising vs Waktu")
+```
+
+# Pembagian Data
+
+Mengikuti pola praktikum, data dibagi menjadi **data latih** (30 tahun pertama) dan **data uji** (10 tahun terakhir).
+
+```{r split}
+train <- data[1:30, ]
+test  <- data[31:40, ]
+train.ts <- ts(train)
+test.ts  <- ts(test)
+```
+
+# Model ARDL Awal (p = 1, q = 1)
+
+```{r ardl11}
+model.ardl <- ardlDlm(formula = Yt ~ Xt, data = train, p = 1, q = 1)
+summary(model.ardl)
+AIC(model.ardl)
+BIC(model.ardl)
+```
+
+## Peramalan dan Akurasi
+
+```{r ardl11-forecast}
+fore.ardl <- dLagM::forecast(model = model.ardl, x = test$Xt, h = 10)
+fore.ardl
+mape.ardl <- MAPE(fore.ardl$forecasts, test$Yt)
+mape.ardl
+GoF(model.ardl)
+```
+
+## Uji Diagnostik Sisaan
+
+```{r ardl11-diag}
+dwtest(model.ardl$model)
+bptest(model.ardl$model)
+shapiro.test(residuals(model.ardl$model))
+```
+
+Sisaan model ARDL(1,1) tidak menunjukkan pelanggaran autokorelasi (DW $\approx 2$, p-value > 0.05), heteroskedastisitas, maupun normalitas (semua p-value > 0.05).
+
+# Pencarian Orde ARDL Optimum
+
+Penentuan orde $(p,q)$ optimum menggunakan `ardlBoundOrders()` berdasarkan kriteria AIC.
+
+```{r ardl-auto}
+model.ardl.opt <- ardlBoundOrders(data = data.frame(train), ic = "AIC", formula = Yt ~ Xt)
+model.ardl.opt$p
+model.ardl.opt$q
+model.ardl.opt$min.Stat
+```
+
+Berdasarkan output tersebut, AIC terkecil (`r round(model.ardl.opt$min.Stat,3)`) didapat pada orde **p = `r model.ardl.opt$p[1,1]`, q = `r model.ardl.opt$q`** — jauh lebih panjang dibanding model awal. Sesuai catatan pada materi kuliah, **AIC cenderung memilih lag yang lebih panjang pada sampel yang relatif kecil**, sehingga orde ini perlu dicek lebih lanjut apakah benar-benar merupakan model yang lebih baik atau hanya overfitting pada data latih.
+
+## Pemodelan dengan Orde Optimum
+
+```{r ardl-opt-fit}
+model.ardl.opt.fit <- ardlDlm(formula = Yt ~ Xt, data = train,
+                               p = model.ardl.opt$p[1,1], q = model.ardl.opt$q)
+summary(model.ardl.opt.fit)
+AIC(model.ardl.opt.fit)
+BIC(model.ardl.opt.fit)
+```
+
+Terlihat bahwa **hampir seluruh koefisien lag tidak signifikan** (p-value > 0.05) dan derajat bebas sisaan sangat kecil — ciri khas model yang terlalu kompleks (overfitting) untuk ukuran data latih yang ada.
+
+## Peramalan dan Akurasi
+
+```{r ardl-opt-forecast}
+fore.ardl.opt <- dLagM::forecast(model = model.ardl.opt.fit, x = test$Xt, h = 10)
+mape.ardl.opt <- MAPE(fore.ardl.opt$forecasts, test$Yt)
+mape.ardl.opt
+```
+
+# Perbandingan Model & Model Terbaik
+
+```{r perbandingan}
+akurasi <- matrix(c(mape.ardl, mape.ardl.opt))
+row.names(akurasi) <- c(paste0("ARDL (p=1, q=1)"),
+                         paste0("ARDL (p=", model.ardl.opt$p[1,1], ", q=", model.ardl.opt$q, ") - optimum AIC"))
+colnames(akurasi) <- "MAPE"
+akurasi
+```
+
+```{r best-model, echo=FALSE}
+best_idx <- which.min(akurasi[, 1])
+best_name <- rownames(akurasi)[best_idx]
+```
+
+Meskipun model dengan orde optimum-AIC memiliki AIC pelatihan yang jauh lebih rendah, nilai **MAPE pada data uji justru lebih besar** (`r round(mape.ardl.opt,4)` vs `r round(mape.ardl,4)`) — mengonfirmasi bahwa model tersebut **overfit** terhadap data latih. Berdasarkan akurasi ramalan pada data uji, model terbaik adalah **`r best_name`**.
+
+## Plot Perbandingan Ramalan
+
+```{r plot-compare, fig.width=8, fig.height=5}
+plot(test$t, test$Yt, type = "b", col = "black",
+     ylim = range(c(test$Yt, fore.ardl$forecasts, fore.ardl.opt$forecasts)),
+     xlab = "Tahun (data uji)", ylab = "Sales", main = "Perbandingan Ramalan vs Aktual")
+points(test$t, fore.ardl$forecasts, col = "red"); lines(test$t, fore.ardl$forecasts, col = "red")
+points(test$t, fore.ardl.opt$forecasts, col = "blue"); lines(test$t, fore.ardl.opt$forecasts, col = "blue")
+legend("topleft", c("Aktual", "ARDL (1,1)", "ARDL optimum AIC"),
+       lty = 1, col = c("black", "red", "blue"), cex = 0.8)
+```
+
+# Kesimpulan
+
+```{r final-coef, echo=FALSE}
+cf <- coef(model.ardl)
+```
+
+Model **ARDL(p=1, q=1)** dipilih sebagai model terbaik, dengan persamaan dugaan:
+
+$$\hat{Y}_t = `r round(cf[1],4)` `r sprintf("%+.4f", cf[2])` X_t `r sprintf("%+.4f", cf[3])` X_{t-1} `r sprintf("%+.4f", cf[4])` Y_{t-1}$$
+
+**Interpretasi:**
+
+- **Dampak jangka pendek/impact multiplier** ($\beta_0 = `r round(cf[2],4)`$, signifikan): kenaikan biaya iklan sebesar 1 satuan pada periode ini diasosiasikan dengan kenaikan penjualan sebesar `r round(cf[2],4)` satuan pada periode yang sama.
+- **Koefisien $Y_{t-1}$** ($\phi_1 = `r round(cf[4],4)`$, signifikan): sekitar `r round(cf[4]*100,1)`% dari level penjualan periode lalu terbawa ke periode ini, menunjukkan penjualan memiliki inersia/persistensi yang kuat.
+- **Dampak jangka panjang / total multiplier**:
+$$\frac{\beta_0+\beta_1}{1-\phi_1} = \frac{`r round(cf[2],4)`+(`r round(cf[3],4)`)}{1-`r round(cf[4],4)`} = `r round((cf[2]+cf[3])/(1-cf[4]),4)`$$
+Jika kenaikan biaya iklan sebesar 1 satuan dipertahankan secara permanen, total kenaikan penjualan dalam jangka panjang adalah sekitar `r round((cf[2]+cf[3])/(1-cf[4]),4)` satuan.
+- Model ini dipilih di atas model dengan orde AIC-optimum ($p=`r model.ardl.opt$p[1,1]`, q=`r model.ardl.opt$q`$) karena performa ramalan pada data uji **jauh lebih baik** (MAPE `r round(mape.ardl,4)` vs `r round(mape.ardl.opt,4)`), sekaligus **lebih sederhana** (parsimoni) dan **seluruh sisaannya memenuhi asumsi klasik** (non-autokorelasi, homoskedastisitas, normalitas) — sedangkan model orde tinggi tersebut overfit terhadap data latih.
