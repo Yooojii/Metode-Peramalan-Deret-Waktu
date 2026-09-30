@@ -1,0 +1,412 @@
+---
+title: "Latihan Pertemuan 4"
+subtitle: "Pembangkitan dan Karakteristik Proses MA(2), AR(2), dan ARMA(2,2)"
+author: "Muhammad Shira Pramudita - M0401241094"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    number_sections: false
+    df_print: paged
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.align = "center", fig.width = 9, fig.height = 4.5)
+```
+
+# O. Import Library
+
+Paket `TSA` dipakai untuk matriks EACF, sedangkan `tseries` dipakai untuk uji Augmented Dickey-Fuller.
+
+```{r}
+library(TSA)
+library(tseries)
+```
+
+# OO. Pembangkitan White Noise
+
+Seluruh proses dibangkitkan dari satu komponen white noise yang sama agar ketiga model bisa dibandingkan secara adil. Nilai seed diambil dari dua digit terakhir NIM, yaitu 94, dengan banyak amatan 300.
+
+```{r}
+set.seed(94)
+wn <- rnorm(300)
+n  <- length(wn)
+ts.plot(wn, main = "White Noise", ylab = expression(e[t]), col = "steelblue")
+```
+
+Parameter yang dipakai untuk ketiga proses ditetapkan sebagai berikut.
+
+```{r}
+theta1 <- 0.4
+theta2 <- 0.6
+phi1   <- 0.5
+phi2   <- 0.2
+```
+
+# I. MA(2)
+
+Proses rataan bergerak ordo dua menyatakan bahwa nilai saat ini dipengaruhi oleh galat saat ini dan dua galat sebelumnya.
+
+$$
+Y_t = e_t + \theta_1 e_{t-1} + \theta_2 e_{t-2}
+$$
+
+## A. Pembangkitan Model
+
+Pembangkitan dilakukan dua cara, yaitu secara manual melalui perulangan dan melalui fungsi bawaan `arima.sim()`.
+
+```{r}
+ma2 <- wn[1:2]
+for (i in 3:n) {
+  ma2[i] <- wn[i] + theta1 * wn[i - 1] + theta2 * wn[i - 2]
+}
+head(ma2, 10)
+```
+
+```{r}
+set.seed(94)
+ma2.sim <- arima.sim(list(order = c(0, 0, 2), ma = c(theta1, theta2)), n = 300)
+head(ma2.sim, 10)
+```
+
+## B. Visualisasi
+
+```{r}
+par(mfrow = c(1, 2))
+ts.plot(ma2, main = "MA(2) Manual", ylab = expression(Y[t]))
+ts.plot(ma2.sim, main = "MA(2) arima.sim", ylab = expression(Y[t]))
+```
+
+Kedua plot berfluktuasi di sekitar nilai tengah yang tetap tanpa kecenderungan naik atau turun. Ini ciri proses yang stasioner.
+
+```{r}
+par(mfrow = c(1, 2))
+acf(ma2, main = "ACF MA(2) Manual")
+acf(ma2.sim, main = "ACF MA(2) arima.sim")
+```
+
+Plot ACF terpotong setelah lag kedua. Pola *cuts off* pada lag ke-q inilah ciri khas proses MA(q), sehingga ordo dua dapat dikenali langsung dari gambar.
+
+```{r}
+par(mfrow = c(1, 2))
+pacf(ma2, main = "PACF MA(2) Manual")
+pacf(ma2.sim, main = "PACF MA(2) arima.sim")
+```
+
+Plot PACF menurun perlahan atau *tails off*, sesuai teori bahwa PACF proses MA tidak terpotong pada lag tertentu.
+
+```{r}
+TSA::eacf(ma2)
+```
+
+Segitiga nol pada matriks EACF bermula di baris AR ordo nol dan kolom MA ordo dua, yang menunjuk ke model MA(2).
+
+## C. Uji Stasioneritas
+
+```{r}
+adf.test(ma2)
+```
+
+Nilai p yang kecil menolak hipotesis nol adanya akar unit, sehingga data dinyatakan stasioner. Hasil ini memang sudah diharapkan karena proses MA dengan ordo berhingga selalu stasioner berapa pun nilai parameternya.
+
+## D. Scatter Plot Lag
+
+```{r}
+par(mfrow = c(1, 3))
+plot(y = ma2[-1], x = ma2[-n],
+     xlab = expression(Y[t-1]), ylab = expression(Y[t]), main = "Yt vs Yt-1")
+plot(y = ma2[-c(1, 2)], x = ma2[-c(n - 1, n)],
+     xlab = expression(Y[t-2]), ylab = expression(Y[t]), main = "Yt vs Yt-2")
+plot(y = ma2[-c(1, 2, 3)], x = ma2[-c(n - 2, n - 1, n)],
+     xlab = expression(Y[t-3]), ylab = expression(Y[t]), main = "Yt vs Yt-3")
+```
+
+Hubungan pada lag pertama dan kedua masih terlihat, sedangkan pada lag ketiga titik-titiknya menyebar tanpa pola. Ini sejalan dengan teori bahwa autokorelasi MA(2) bernilai nol mulai lag ketiga.
+
+## E. Autokorelasi Empiris dan Teoretis
+
+Nilai teoretisnya dihitung dengan rumus berikut.
+
+$$
+\rho_1 = \frac{\theta_1 + \theta_1\theta_2}{1 + \theta_1^2 + \theta_2^2}, \qquad
+\rho_2 = \frac{\theta_2}{1 + \theta_1^2 + \theta_2^2}, \qquad
+\rho_3 = 0
+$$
+
+```{r}
+denom   <- 1 + theta1^2 + theta2^2
+rho_teo <- c((theta1 + theta1 * theta2) / denom, theta2 / denom, 0)
+rho_emp <- acf(ma2, plot = FALSE)$acf[2:4]
+
+data.frame(Lag = 1:3,
+           Teoretis = round(rho_teo, 4),
+           Empiris  = round(as.numeric(rho_emp), 4),
+           Selisih  = round(as.numeric(rho_emp) - rho_teo, 4))
+```
+
+```{r}
+round(ARMAacf(ma = c(theta1, theta2), lag.max = 3)[2:4], 4)
+```
+
+Nilai empiris dan teoretis berdekatan. Selisih yang tersisa wajar karena data bangkitan hanya berjumlah 300 amatan, bukan tak hingga.
+
+# II. AR(2)
+
+Proses regresi diri ordo dua menyatakan bahwa nilai saat ini dipengaruhi oleh dua nilai sebelumnya.
+
+$$
+Y_t = \phi_1 Y_{t-1} + \phi_2 Y_{t-2} + e_t
+$$
+
+## A. Pembangkitan Model
+
+```{r}
+ar2 <- wn[1:2]
+for (i in 3:n) {
+  ar2[i] <- phi1 * ar2[i - 1] + phi2 * ar2[i - 2] + wn[i]
+}
+head(ar2, 10)
+```
+
+```{r}
+set.seed(94)
+ar2.sim <- arima.sim(list(order = c(2, 0, 0), ar = c(phi1, phi2)), n = 300)
+head(ar2.sim, 10)
+```
+
+## B. Visualisasi
+
+```{r}
+par(mfrow = c(1, 2))
+ts.plot(ar2, main = "AR(2) Manual", ylab = expression(Y[t]))
+ts.plot(ar2.sim, main = "AR(2) arima.sim", ylab = expression(Y[t]))
+```
+
+```{r}
+par(mfrow = c(1, 2))
+acf(ar2, main = "ACF AR(2) Manual")
+acf(ar2.sim, main = "ACF AR(2) arima.sim")
+```
+
+Berbeda dengan MA, plot ACF proses AR menurun perlahan secara eksponensial dan tidak terpotong.
+
+```{r}
+par(mfrow = c(1, 2))
+pacf(ar2, main = "PACF AR(2) Manual")
+pacf(ar2.sim, main = "PACF AR(2) arima.sim")
+```
+
+Plot PACF terpotong setelah lag kedua. Pola inilah yang dipakai untuk mengenali ordo proses AR.
+
+```{r}
+TSA::eacf(ar2)
+```
+
+## C. Uji Stasioneritas
+
+Proses AR tidak otomatis stasioner. Syaratnya semua akar persamaan karakteristik berada di luar lingkaran satuan, yaitu modulusnya lebih besar dari satu.
+
+```{r}
+akar <- polyroot(c(1, -phi1, -phi2))
+data.frame(Akar = round(akar, 4), Modulus = round(Mod(akar), 4))
+```
+
+```{r}
+adf.test(ar2)
+```
+
+Kedua modulus lebih besar dari satu dan uji ADF menolak adanya akar unit, sehingga proses AR(2) ini stasioner.
+
+## D. Scatter Plot Lag
+
+```{r}
+par(mfrow = c(1, 3))
+plot(y = ar2[-1], x = ar2[-n],
+     xlab = expression(Y[t-1]), ylab = expression(Y[t]), main = "Yt vs Yt-1")
+plot(y = ar2[-c(1, 2)], x = ar2[-c(n - 1, n)],
+     xlab = expression(Y[t-2]), ylab = expression(Y[t]), main = "Yt vs Yt-2")
+plot(y = ar2[-c(1, 2, 3)], x = ar2[-c(n - 2, n - 1, n)],
+     xlab = expression(Y[t-3]), ylab = expression(Y[t]), main = "Yt vs Yt-3")
+```
+
+Hubungan positif masih terlihat sampai lag ketiga meski melemah. Ini gambaran visual dari ACF yang meluruh perlahan.
+
+## E. Autokorelasi Empiris dan Teoretis
+
+Nilai teoretisnya diturunkan dari persamaan Yule-Walker.
+
+$$
+\rho_1 = \frac{\phi_1}{1 - \phi_2}, \qquad
+\rho_2 = \phi_2 + \phi_1\rho_1, \qquad
+\rho_3 = \phi_1\rho_2 + \phi_2\rho_1
+$$
+
+```{r}
+rho1_ar <- phi1 / (1 - phi2)
+rho2_ar <- phi2 + phi1 * rho1_ar
+rho3_ar <- phi1 * rho2_ar + phi2 * rho1_ar
+rho_teo_ar <- c(rho1_ar, rho2_ar, rho3_ar)
+rho_emp_ar <- acf(ar2, plot = FALSE)$acf[2:4]
+
+data.frame(Lag = 1:3,
+           Teoretis = round(rho_teo_ar, 4),
+           Empiris  = round(as.numeric(rho_emp_ar), 4),
+           Selisih  = round(as.numeric(rho_emp_ar) - rho_teo_ar, 4))
+```
+
+```{r}
+round(ARMAacf(ar = c(phi1, phi2), lag.max = 3)[2:4], 4)
+```
+
+# III. ARMA(2,2)
+
+Proses campuran menggabungkan komponen regresi diri dan rataan bergerak.
+
+$$
+Y_t = \phi_1 Y_{t-1} + \phi_2 Y_{t-2} + e_t + \theta_1 e_{t-1} + \theta_2 e_{t-2}
+$$
+
+## A. Pembangkitan Model
+
+```{r}
+arma22 <- wn[1:2]
+for (i in 3:n) {
+  arma22[i] <- phi1 * arma22[i - 1] + phi2 * arma22[i - 2] +
+    wn[i] + theta1 * wn[i - 1] + theta2 * wn[i - 2]
+}
+head(arma22, 10)
+```
+
+```{r}
+set.seed(94)
+arma22.sim <- arima.sim(
+  list(order = c(2, 0, 2), ar = c(phi1, phi2), ma = c(theta1, theta2)),
+  n = 300
+)
+head(arma22.sim, 10)
+```
+
+## B. Visualisasi
+
+```{r}
+par(mfrow = c(1, 2))
+ts.plot(arma22, main = "ARMA(2,2) Manual", ylab = expression(Y[t]))
+ts.plot(arma22.sim, main = "ARMA(2,2) arima.sim", ylab = expression(Y[t]))
+```
+
+```{r}
+par(mfrow = c(1, 2))
+acf(arma22, main = "ACF ARMA(2,2) Manual")
+acf(arma22.sim, main = "ACF ARMA(2,2) arima.sim")
+```
+
+```{r}
+par(mfrow = c(1, 2))
+pacf(arma22, main = "PACF ARMA(2,2) Manual")
+pacf(arma22.sim, main = "PACF ARMA(2,2) arima.sim")
+```
+
+Baik ACF maupun PACF sama-sama menurun perlahan dan tidak ada yang terpotong tegas. Inilah alasan ordo proses campuran sulit ditentukan hanya dari kedua plot tersebut, sehingga EACF diperlukan.
+
+```{r}
+TSA::eacf(arma22)
+```
+
+## C. Uji Stasioneritas
+
+```{r}
+akar_arma <- polyroot(c(1, -phi1, -phi2))
+data.frame(Akar = round(akar_arma, 4), Modulus = round(Mod(akar_arma), 4))
+```
+
+```{r}
+adf.test(arma22)
+```
+
+Kestasioneran proses ARMA hanya ditentukan oleh bagian AR-nya, sehingga akar karakteristik yang diperiksa sama dengan bagian II.
+
+## D. Scatter Plot Lag
+
+```{r}
+par(mfrow = c(1, 3))
+plot(y = arma22[-1], x = arma22[-n],
+     xlab = expression(Y[t-1]), ylab = expression(Y[t]), main = "Yt vs Yt-1")
+plot(y = arma22[-c(1, 2)], x = arma22[-c(n - 1, n)],
+     xlab = expression(Y[t-2]), ylab = expression(Y[t]), main = "Yt vs Yt-2")
+plot(y = arma22[-c(1, 2, 3)], x = arma22[-c(n - 2, n - 1, n)],
+     xlab = expression(Y[t-3]), ylab = expression(Y[t]), main = "Yt vs Yt-3")
+```
+
+## E. Autokorelasi Empiris dan Teoretis
+
+```{r}
+rho_teo_arma <- ARMAacf(ar = c(phi1, phi2), ma = c(theta1, theta2), lag.max = 3)[2:4]
+rho_emp_arma <- acf(arma22, plot = FALSE)$acf[2:4]
+
+data.frame(Lag = 1:3,
+           Teoretis = round(as.numeric(rho_teo_arma), 4),
+           Empiris  = round(as.numeric(rho_emp_arma), 4),
+           Selisih  = round(as.numeric(rho_emp_arma) - as.numeric(rho_teo_arma), 4))
+```
+
+# IV. Penerapan pada Data Nyata
+
+Bagian ini menerapkan alat pengenalan pola yang sama pada data asli kelompok, yaitu pangsa harian energi terbarukan Jerman tahun 2023 sebanyak 365 amatan. Tujuannya melihat struktur mana yang paling menyerupai data sebenarnya.
+
+Sumber data adalah Energy-Charts, Fraunhofer Institute for Solar Energy Systems, yang menghimpun data asli dari Bundesnetzagentur dengan lisensi CC BY 4.0.
+
+```{r}
+data <- read.csv("Data-Pangsa-Terbarukan-Jerman-2023.csv")
+data$Tanggal <- as.Date(data$Tanggal)
+str(data)
+```
+
+```{r}
+pangsa <- ts(data$Pangsa)
+ts.plot(pangsa, main = "Pangsa Energi Terbarukan Jerman 2023",
+        ylab = "Pangsa (%)", col = "darkgreen")
+```
+
+```{r}
+par(mfrow = c(1, 2))
+acf(pangsa, main = "ACF Pangsa Terbarukan")
+pacf(pangsa, main = "PACF Pangsa Terbarukan")
+```
+
+```{r}
+TSA::eacf(pangsa)
+```
+
+```{r}
+adf.test(pangsa)
+```
+
+```{r}
+m <- length(pangsa)
+par(mfrow = c(1, 3))
+plot(y = pangsa[-1], x = pangsa[-m],
+     xlab = expression(Y[t-1]), ylab = expression(Y[t]), main = "Yt vs Yt-1")
+plot(y = pangsa[-c(1, 2)], x = pangsa[-c(m - 1, m)],
+     xlab = expression(Y[t-2]), ylab = expression(Y[t]), main = "Yt vs Yt-2")
+plot(y = pangsa[-c(1, 2, 3)], x = pangsa[-c(m - 2, m - 1, m)],
+     xlab = expression(Y[t-3]), ylab = expression(Y[t]), main = "Yt vs Yt-3")
+```
+
+```{r}
+round(acf(pangsa, plot = FALSE)$acf[2:4], 4)
+```
+
+Plot ACF data nyata menurun perlahan dan PACF terpotong pada lag awal, pola yang lebih menyerupai proses AR daripada MA. Berbeda dengan data bangkitan yang parameternya sudah diketahui, data nyata masih memuat sisa pengaruh cuaca dan musiman mingguan, sehingga ordo yang terbaca belum tentu langsung menjadi ordo model akhir.
+
+# Kesimpulan
+
+1. Proses MA(2) dikenali dari plot ACF yang terpotong setelah lag kedua, sementara PACF-nya menurun perlahan.
+2. Proses AR(2) menunjukkan pola sebaliknya, yaitu PACF terpotong setelah lag kedua dan ACF menurun perlahan.
+3. Proses ARMA(2,2) membuat kedua plot sama-sama menurun perlahan, sehingga pengenalan ordo bergantung pada matriks EACF.
+4. Nilai autokorelasi empiris dari data bangkitan mendekati nilai teoretisnya, dengan selisih kecil yang wajar untuk 300 amatan.
+5. Proses MA selalu stasioner, sedangkan kestasioneran proses AR dan ARMA bergantung pada akar persamaan karakteristik bagian AR. Pada parameter yang dipakai di sini, modulus kedua akarnya lebih besar dari satu sehingga ketiga proses stasioner.
