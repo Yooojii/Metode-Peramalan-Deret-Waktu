@@ -1,0 +1,396 @@
+---
+title: "Latihan Pertemuan 6"
+subtitle: "Pemodelan ARIMA: Pendugaan Parameter, Diagnostik Model, dan Peramalan"
+author: "Muhammad Shira Pramudita - M0401241094"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    df_print: paged
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.align = "center", fig.width = 9, fig.height = 4.5)
+```
+
+# LIBRARY
+
+```{r}
+library(ggplot2)
+library(tseries)
+library(MASS)
+library(forecast)
+library(TSA)
+library(lmtest)
+library(graphics)
+```
+
+# INPUT DATA
+
+Data yang dipakai adalah pangsa energi terbarukan harian Jerman tahun 2023 sebanyak 365 amatan, yaitu bagian data yang menjadi jatah pengerjaan dalam kelompok. Sumbernya Energy-Charts, Fraunhofer Institute for Solar Energy Systems, yang menghimpun data asli dari Bundesnetzagentur dengan lisensi CC BY 4.0.
+
+```{r}
+dt <- read.csv("Data-Pangsa-Terbarukan-Jerman-2023.csv")
+dt$Tanggal <- as.Date(dt$Tanggal)
+head(dt)
+```
+
+```{r}
+str(dt)
+```
+
+## Bagi Menjadi Data Train dan Test
+
+Pembagian memakai perbandingan 80 persen berbanding 20 persen, sehingga data latih berisi 292 amatan dan data uji 73 amatan.
+
+```{r}
+n     <- nrow(dt)
+n_tr  <- floor(0.8 * n)
+dt.train <- dt[1:n_tr, ]
+dt.test  <- dt[(n_tr + 1):n, ]
+
+c(total = n, latih = nrow(dt.train), uji = nrow(dt.test))
+```
+
+```{r}
+train.ts <- ts(dt.train$Pangsa)
+test.ts  <- ts(dt.test$Pangsa)
+c(rataan_latih = mean(train.ts), ragam_latih = var(train.ts), rataan_uji = mean(test.ts))
+```
+
+# EKSPLORASI
+
+## Plot Time Series
+
+```{r}
+ts.plot(ts(dt$Pangsa), col = "black", lwd = 1,
+        xlab = "Hari ke-", ylab = "Pangsa (%)", main = "Data Penuh")
+abline(v = n_tr, col = "red", lty = 2)
+```
+
+```{r}
+par(mfrow = c(1, 2))
+plot(train.ts, col = "navyblue", type = "o", cex = 0.4,
+     xlab = "Hari ke-", ylab = "Pangsa (%)", main = "Data Latih")
+plot(test.ts, col = "darkgreen", type = "o", cex = 0.4,
+     xlab = "Hari ke-", ylab = "Pangsa (%)", main = "Data Uji")
+```
+
+Data berfluktuasi lebar antara sekitar 20 persen sampai 85 persen. Tidak terlihat kecenderungan naik atau turun yang tegas sepanjang tahun, tetapi ayunannya cukup besar dari hari ke hari.
+
+# CEK KESTASIONERAN
+
+## Plot ACF
+
+```{r}
+acf(train.ts, main = "ACF Data Latih", lag.max = 20)
+```
+
+Autokorelasi menurun perlahan dari 0,495 pada lag pertama dan belum mendekati nol sampai lag kesepuluh. Terlihat pula kenaikan kecil di sekitar lag keenam dan ketujuh yang mencerminkan pola mingguan.
+
+## Uji ADF
+
+```{r}
+tseries::adf.test(train.ts)
+```
+
+Nilai p sebesar 0,0125 berada di bawah 0,05 sehingga secara formal data sudah stasioner dalam rataan. Namun penurunan ACF yang lambat menunjukkan masih ada ketergantungan antarwaktu yang kuat, sehingga pembedaan tetap dicoba dan hasilnya nanti dibandingkan melalui AIC.
+
+## Plot Box-Cox
+
+```{r}
+index <- seq_along(train.ts)
+bc <- boxcox(train.ts ~ index, lambda = seq(-3, 4, by = 0.01))
+```
+
+```{r}
+lambda_opt <- bc$x[which.max(bc$y)]
+ci_lambda  <- bc$x[bc$y > max(bc$y) - 0.5 * qchisq(0.95, df = 1)]
+c(Lambda = round(lambda_opt, 3),
+  Batas_Bawah = round(min(ci_lambda), 3),
+  Batas_Atas  = round(max(ci_lambda), 3))
+```
+
+Lambda optimum 1,72 dengan selang 1,32 sampai 2,15. Selang ini tidak memuat nilai satu, sehingga ragamnya belum sepenuhnya stabil. Catatan ini dibawa ke bagian akhir sebagai keterbatasan.
+
+# PENANGANAN KETIDAKSTASIONERAN
+
+## Differencing
+
+```{r}
+train.diff <- diff(train.ts, differences = 1)
+plot.ts(train.diff, lty = 1, xlab = "Hari ke-", ylab = "Selisih Pertama",
+        main = "Data Hasil Differencing 1", col = "navyblue")
+abline(h = 0, col = "red", lty = 2)
+```
+
+## ACF Setelah Differencing
+
+```{r}
+acf(train.diff, main = "ACF Setelah Differencing", lag.max = 20)
+```
+
+## Uji ADF Setelah Differencing
+
+```{r}
+tseries::adf.test(train.diff)
+```
+
+Nilai p turun menjadi 0,01 dan plot ACF langsung terpotong. Data hasil pembedaan sudah stasioner.
+
+# IDENTIFIKASI MODEL
+
+## Plot ACF
+
+```{r}
+acf(train.diff, main = "ACF", lag.max = 20)
+```
+
+## Plot PACF
+
+```{r}
+pacf(train.diff, main = "PACF", lag.max = 20)
+```
+
+## Plot EACF
+
+```{r}
+eacf(train.diff)
+```
+
+Plot ACF menunjukkan nilai nyata pada lag pertama, sedangkan PACF nyata sampai sekitar lag kedua. Dari pola tersebut beserta matriks EACF, model tentatif yang dicoba adalah ARIMA(0,1,1), ARIMA(1,1,0), ARIMA(1,1,1), ARIMA(1,1,2), ARIMA(2,1,1), dan ARIMA(2,1,2).
+
+# PENDUGAAN PARAMETER MODEL TENTATIF
+
+Pendugaan dilakukan pada data hasil pembedaan, sehingga ordo pembedaan ditulis nol di dalam fungsi `Arima()` tetapi maknanya tetap ARIMA dengan d sama dengan satu.
+
+## ARIMA(0,1,1)
+
+```{r}
+model1 <- Arima(train.diff, order = c(0, 0, 1), method = "ML")
+summary(model1)
+lmtest::coeftest(model1)
+```
+
+## ARIMA(1,1,0)
+
+```{r}
+model2 <- Arima(train.diff, order = c(1, 0, 0), method = "ML")
+summary(model2)
+lmtest::coeftest(model2)
+```
+
+## ARIMA(1,1,1)
+
+```{r}
+model3 <- Arima(train.diff, order = c(1, 0, 1), method = "ML")
+summary(model3)
+lmtest::coeftest(model3)
+```
+
+## ARIMA(1,1,2)
+
+```{r}
+model4 <- Arima(train.diff, order = c(1, 0, 2), method = "ML")
+summary(model4)
+lmtest::coeftest(model4)
+```
+
+## ARIMA(2,1,1)
+
+```{r}
+model5 <- Arima(train.diff, order = c(2, 0, 1), method = "ML")
+summary(model5)
+lmtest::coeftest(model5)
+```
+
+## ARIMA(2,1,2)
+
+```{r}
+model6 <- Arima(train.diff, order = c(2, 0, 2), method = "ML")
+summary(model6)
+lmtest::coeftest(model6)
+```
+
+# RINGKASAN AIC
+
+```{r}
+model_tentatif <- data.frame(
+  Model = c("ARIMA(0,1,1)", "ARIMA(1,1,0)", "ARIMA(1,1,1)",
+            "ARIMA(1,1,2)", "ARIMA(2,1,1)", "ARIMA(2,1,2)"),
+  AIC = c(AIC(model1), AIC(model2), AIC(model3), AIC(model4), AIC(model5), AIC(model6)),
+  BIC = c(BIC(model1), BIC(model2), BIC(model3), BIC(model4), BIC(model5), BIC(model6))
+)
+model_tentatif$AIC <- round(model_tentatif$AIC, 2)
+model_tentatif$BIC <- round(model_tentatif$BIC, 2)
+model_tentatif[order(model_tentatif$AIC), ]
+```
+
+AIC terkecil dimiliki ARIMA(1,1,2) sebesar 2143,64, disusul ARIMA(2,1,1) sebesar 2143,80. Keduanya berdekatan, tetapi ARIMA(1,1,2) unggul karena seluruh parameter ARMA-nya nyata, sedangkan pada ARIMA(2,1,1) ada parameter yang tidak nyata. Model ARIMA(0,1,1) dan ARIMA(1,1,0) tertinggal jauh dengan AIC di atas 2183.
+
+# ANALISIS SISAAN
+
+Model terpilih sementara adalah ARIMA(1,1,2).
+
+```{r}
+model_terbaik <- model4
+sisaan <- residuals(model_terbaik)
+```
+
+## Eksplorasi Sisaan
+
+```{r}
+par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+qqnorm(sisaan, main = "Normal Q-Q Plot"); qqline(sisaan, col = "blue", lwd = 2)
+plot(sisaan, type = "p", main = "Sisaan vs Waktu", xlab = "Waktu", ylab = "Sisaan")
+abline(h = 0, col = "red", lty = 2)
+acf(sisaan, main = "ACF Sisaan")
+pacf(sisaan, main = "PACF Sisaan")
+```
+
+Titik-titik pada Q-Q plot mengikuti garis lurus, sisaan menyebar acak di sekitar nol, dan tidak ada lag yang menonjol pada ACF maupun PACF sisaan.
+
+## Uji Formal
+
+### Normalitas
+
+```{r}
+ks.test(sisaan, "pnorm", mean(sisaan), sd(sisaan))
+```
+
+```{r}
+jarque.bera.test(sisaan)
+```
+
+Nilai p uji Kolmogorov-Smirnov 0,7735 dan Jarque-Bera 0,2481. Keduanya jauh di atas 0,05 sehingga asumsi kenormalan terpenuhi.
+
+### Sisaan Saling Bebas
+
+```{r}
+Box.test(sisaan, type = "Ljung")
+```
+
+Nilai p 0,9823 sehingga tidak ada bukti autokorelasi pada sisaan.
+
+### Ragam Sisaan Homogen
+
+```{r}
+Box.test(sisaan^2, type = "Ljung")
+```
+
+Nilai p 0,2378 sehingga ragam sisaan dapat dianggap homogen.
+
+### Nilai Tengah Sisaan Sama dengan Nol
+
+```{r}
+t.test(sisaan, mu = 0, conf.level = 0.95)
+```
+
+Nilai p 0,6951 sehingga nilai tengah sisaan tidak berbeda nyata dari nol. Keempat asumsi terpenuhi.
+
+# OVERFITTING
+
+Model overfitting dibentuk dengan menaikkan satu ordo pada komponen AR maupun MA dari model terpilih.
+
+```{r}
+over1 <- Arima(train.diff, order = c(2, 0, 2), method = "ML")
+over2 <- Arima(train.diff, order = c(1, 0, 3), method = "ML")
+over3 <- Arima(train.diff, order = c(3, 0, 1), method = "ML")
+
+data.frame(
+  Model = c("ARIMA(1,1,2) terpilih", "ARIMA(2,1,2)", "ARIMA(1,1,3)", "ARIMA(3,1,1)"),
+  AIC = round(c(AIC(model_terbaik), AIC(over1), AIC(over2), AIC(over3)), 2)
+)
+```
+
+```{r}
+lmtest::coeftest(over1)
+```
+
+Tidak ada model overfitting yang menghasilkan AIC lebih kecil dari 2143,64, dan pada ARIMA(2,1,2) justru tidak ada parameter yang nyata. Model ARIMA(1,1,2) dipertahankan.
+
+# MODEL TERBAIK: ARIMA(1,1,2)
+
+```{r}
+lmtest::coeftest(model_terbaik)
+```
+
+Ketiga parameter ARMA nyata pada taraf 5 persen, yaitu koefisien AR sebesar 0,5177, MA pertama sebesar -0,7521, dan MA kedua sebesar -0,1820. Konstanta tidak nyata, yang wajar karena data sudah dibedakan.
+
+# PERAMALAN
+
+```{r}
+ramalan <- forecast::forecast(model_terbaik, h = nrow(dt.test))
+plot(ramalan, main = "Peramalan pada Skala Hasil Differencing")
+```
+
+Ramalan di atas masih berada pada skala selisih, sehingga perlu dikembalikan ke skala asli melalui proses kebalikan pembedaan.
+
+```{r}
+pt_akhir <- tail(dt.train$Pangsa, 1)
+pt_akhir
+```
+
+```{r}
+hasil <- diffinv(as.numeric(ramalan$mean), differences = 1, xi = pt_akhir)[-1]
+perbandingan <- data.frame(
+  Tanggal  = dt.test$Tanggal,
+  Aktual   = dt.test$Pangsa,
+  Ramalan  = round(hasil, 2)
+)
+head(perbandingan, 10)
+```
+
+## Akurasi
+
+```{r}
+akurasi <- accuracy(hasil, dt.test$Pangsa)
+round(akurasi, 4)
+```
+
+## Perbandingan dengan Ramalan Naif
+
+Ramalan naif memakai nilai terakhir data latih untuk seluruh periode uji. Pembanding ini dipakai untuk memastikan model benar-benar memberi tambahan manfaat.
+
+```{r}
+naif <- rep(pt_akhir, nrow(dt.test))
+data.frame(
+  Metode = c("ARIMA(1,1,2)", "Ramalan naif"),
+  MAPE = round(c(mean(abs((dt.test$Pangsa - hasil) / dt.test$Pangsa)) * 100,
+                 mean(abs((dt.test$Pangsa - naif) / dt.test$Pangsa)) * 100), 3),
+  RMSE = round(c(sqrt(mean((dt.test$Pangsa - hasil)^2)),
+                 sqrt(mean((dt.test$Pangsa - naif)^2))), 3)
+)
+```
+
+## Plot Ramalan terhadap Data Aktual
+
+```{r}
+ts.plot(ts(dt$Pangsa), col = "black", lty = 1,
+        xlab = "Hari ke-", ylab = "Pangsa (%)", main = "Aktual dan Ramalan")
+lines((n_tr + 1):(n_tr + length(hasil)), hasil, col = "blue", lty = 2, lwd = 2)
+abline(v = n_tr, col = "red", lty = 3)
+legend("topleft", legend = c("Data Aktual", "Ramalan ARIMA(1,1,2)"),
+       col = c("black", "blue"), lty = c(1, 2), lwd = c(1, 2), cex = 0.8)
+```
+
+Garis ramalan mendatar di sekitar 60 persen, sedangkan data aktual tetap berayun lebar antara 20 sampai 85 persen. Inilah sifat ramalan ARIMA tanpa komponen musiman pada horizon panjang, yaitu cepat menuju nilai tetap.
+
+# KESIMPULAN
+
+1. Data pangsa energi terbarukan 2023 menghasilkan nilai p uji ADF 0,0125, tetapi ACF-nya menurun perlahan. Setelah pembedaan satu kali, nilai p menjadi 0,01 dan ACF langsung terpotong.
+
+2. Dari enam model tentatif, ARIMA(1,1,2) terpilih dengan AIC 2143,64 dan seluruh parameter ARMA nyata. Pengujian overfitting tidak menemukan model yang lebih baik.
+
+3. Keempat asumsi sisaan terpenuhi, yaitu kenormalan dengan nilai p 0,7735, kebebasan dengan nilai p 0,9823, kehomogenan ragam dengan nilai p 0,2378, dan nilai tengah nol dengan nilai p 0,6951.
+
+4. Akurasi pada data uji menghasilkan MAPE 33,71 persen dan RMSE 18,05. Sebagai pembanding, ramalan naif menghasilkan MAPE 34,07 persen. Selisihnya hanya 0,36 poin persen, sehingga model ini hampir tidak lebih baik daripada menebak dengan nilai terakhir.
+
+5. Penyebabnya ada dua. Pertama, ACF data asli menunjukkan pola mingguan di sekitar lag keenam dan ketujuh yang tidak bisa ditangkap ARIMA tanpa komponen musiman. Kedua, horizon peramalan sepanjang 73 hari terlalu jauh untuk model non-musiman, sehingga ramalannya cepat mendatar.
+
+6. Keterbatasan lain, selang lambda Box-Cox pada data latih berada di 1,32 sampai 2,15 dan tidak memuat nilai satu, sehingga ragamnya belum sepenuhnya stabil. Penanganan ragam dan penambahan komponen musiman melalui SARIMA berpeluang memperbaiki hasil ini.
