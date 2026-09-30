@@ -1,0 +1,428 @@
+---
+title: "Latihan Pertemuan 5"
+subtitle: "Data Tidak Stasioner pada Data Energi Terbarukan Jerman"
+author: "Muhammad Shira Pramudita - M0401241094"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    df_print: paged
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.align = "center", fig.width = 9, fig.height = 4.5)
+```
+
+# Library
+
+```{r}
+library(ggplot2)
+library(tsibble)
+library(tseries)
+library(MASS)
+```
+
+# Data
+
+Data yang dipakai adalah data harian energi terbarukan Jerman periode 1 Januari 2021 sampai 31 Desember 2025 sebanyak 1.826 amatan. Sumbernya Energy-Charts, Fraunhofer Institute for Solar Energy Systems, yang menghimpun data asli dari Bundesnetzagentur dengan lisensi CC BY 4.0.
+
+Tiga peubah dipakai untuk mewakili tiga kondisi kestasioneran yang berbeda.
+
+```{r}
+data <- read.csv("Data-Energi-Terbarukan-Jerman-2021-2025.csv")
+data$Tanggal <- as.Date(data$Tanggal)
+str(data)
+```
+
+Fungsi bantu berikut dipakai berulang untuk menghitung lambda optimum Box-Cox beserta selang kepercayaan 95 persennya.
+
+```{r}
+selang_lambda <- function(y) {
+  idx <- seq_along(y)
+  bc  <- boxcox(y ~ idx, lambda = seq(-3, 4, by = 0.01), plotit = FALSE)
+  lam <- bc$x[which.max(bc$y)]
+  ci  <- bc$x[bc$y > max(bc$y) - 0.5 * qchisq(0.95, 1)]
+  c(lambda = round(lam, 3), batas_bawah = round(min(ci), 3), batas_atas = round(max(ci), 3))
+}
+```
+
+# I. Stasioner dalam Rataan dan Ragam
+
+Bagian ini memakai pangsa energi terbarukan harian sepanjang 2021 sampai 2025.
+
+```{r}
+pangsa <- ts(data$Pangsa)
+```
+
+## Plot Time Series
+
+```{r}
+pangsa |> as_tsibble() |>
+  ggplot(aes(x = index, y = value)) +
+  geom_line(color = "darkgreen") + theme_bw() +
+  xlab("Amatan ke-") + ylab("Pangsa (%)") +
+  geom_hline(yintercept = mean(pangsa), linetype = "dashed", color = "red")
+```
+
+```{r}
+c(rataan = mean(pangsa), ragam = var(pangsa))
+```
+
+Deret berfluktuasi di sekitar garis rataan 54,24 persen tanpa kecenderungan menjauh. Lebar fluktuasinya juga tidak berubah mencolok dari awal ke akhir periode.
+
+```{r}
+lattice::densityplot(as.vector(pangsa), xlab = "Pangsa (%)")
+```
+
+## Plot ACF
+
+```{r}
+acf(pangsa, main = "ACF Pangsa Energi Terbarukan")
+```
+
+Nilai autokorelasi menurun cukup cepat menuju nol, bukan menurun perlahan seperti ciri data tidak stasioner.
+
+## Uji ADF
+
+```{r}
+adf.test(pangsa)
+```
+
+Nilai p sebesar 0,01 lebih kecil dari taraf nyata 5 persen, sehingga hipotesis nol adanya akar unit ditolak. Data stasioner dalam rataan.
+
+## Plot Box-Cox
+
+```{r}
+index <- seq_along(pangsa)
+bc <- boxcox(pangsa ~ index, lambda = seq(-3, 4, by = 0.01))
+```
+
+```{r}
+selang_lambda(as.vector(pangsa))
+```
+
+Lambda optimum 1,01 dengan selang kepercayaan 0,88 sampai 1,15. Selang tersebut memuat nilai satu, sehingga data juga stasioner dalam ragam dan tidak memerlukan transformasi.
+
+## Partisi Data Deret Waktu
+
+```{r}
+pangsa |> as_tsibble() |>
+  ggplot(aes(x = index, y = value)) +
+  geom_line(color = "darkgreen") + theme_bw() +
+  xlab("Amatan ke-") + ylab("Pangsa (%)") +
+  geom_vline(xintercept = 600, linetype = "dashed", color = "red") +
+  geom_vline(xintercept = 1200, linetype = "dashed", color = "blue")
+```
+
+### Bagian 1: amatan 1 sampai 600
+
+```{r}
+dt1 <- pangsa[1:600] |> ts()
+c(rataan = mean(dt1), ragam = var(dt1))
+```
+
+```{r}
+dt1 |> as_tsibble() |>
+  ggplot(aes(x = index, y = value)) +
+  geom_line(color = "darkgreen") + theme_bw() + xlab("Amatan ke-") + ylab("Pangsa (%)")
+```
+
+```{r}
+acf(dt1, main = "ACF Bagian 1")
+```
+
+```{r}
+adf.test(dt1)
+```
+
+```{r}
+idx1 <- seq_along(dt1)
+bc1 <- boxcox(dt1 ~ idx1, lambda = seq(-3, 4, by = 0.01))
+selang_lambda(as.vector(dt1))
+```
+
+### Bagian 2: amatan 1 sampai 1200
+
+```{r}
+dt2 <- pangsa[1:1200] |> ts()
+c(rataan = mean(dt2), ragam = var(dt2))
+```
+
+```{r}
+dt2 |> as_tsibble() |>
+  ggplot(aes(x = index, y = value)) +
+  geom_line(color = "darkgreen") + theme_bw() + xlab("Amatan ke-") + ylab("Pangsa (%)")
+```
+
+```{r}
+acf(dt2, main = "ACF Bagian 2")
+```
+
+```{r}
+adf.test(dt2)
+```
+
+```{r}
+idx2 <- seq_along(dt2)
+bc2 <- boxcox(dt2 ~ idx2, lambda = seq(-3, 4, by = 0.01))
+selang_lambda(as.vector(dt2))
+```
+
+Kedua partisi tetap stasioner dalam rataan dengan nilai p uji ADF sebesar 0,01. Menariknya, selang lambda kedua partisi tidak memuat nilai satu, yaitu 0,24 sampai 0,74 untuk bagian pertama dan 0,65 sampai 0,98 untuk bagian kedua. Ini terjadi karena kedua partisi hanya mencakup periode 2021 sampai 2024 ketika pangsa masih naik dari 43,9 persen ke 61,2 persen, sehingga ragamnya belum sestabil deret penuh. Kesimpulan kestasioneran memang bisa berubah mengikuti panjang periode yang diamati.
+
+# II. Tidak Stasioner dalam Rataan, Stasioner dalam Ragam
+
+Bagian ini memakai akar dari pembangkitan surya harian. Akar dipakai karena pembangkitan surya mentah tidak stasioner baik dalam rataan maupun ragam, sedangkan setelah diakarkan ragamnya menjadi stabil sehingga ketidakstasioneran yang tersisa murni pada rataan.
+
+```{r}
+surya <- ts(sqrt(data$Surya))
+```
+
+## Plot Time Series
+
+```{r}
+surya |> as_tsibble() |>
+  ggplot(aes(x = index, y = value)) +
+  geom_line(color = "darkorange") + theme_bw() +
+  xlab("Amatan ke-") + ylab("Akar Pembangkitan Surya") +
+  geom_hline(yintercept = mean(surya), linetype = "dashed", color = "red")
+```
+
+Deret bergerak naik turun mengikuti musim tahunan dan puncaknya makin tinggi dari tahun ke tahun seiring bertambahnya kapasitas panel surya terpasang. Rataannya jelas tidak tetap.
+
+## Plot ACF
+
+```{r}
+acf(surya, main = "ACF Akar Pembangkitan Surya", lag.max = 60)
+```
+
+Autokorelasi menurun sangat perlahan dan bergelombang, ciri khas data yang tidak stasioner dalam rataan.
+
+## Uji ADF
+
+```{r}
+adf.test(surya)
+```
+
+Nilai p sebesar 0,3372 lebih besar dari 0,05, sehingga hipotesis nol adanya akar unit tidak ditolak. Data tidak stasioner dalam rataan.
+
+## Plot Box-Cox
+
+```{r}
+index_s <- seq_along(surya)
+bc_s <- boxcox(surya ~ index_s, lambda = seq(-3, 4, by = 0.01))
+selang_lambda(as.vector(surya))
+```
+
+Lambda optimum 1,02 dengan selang 0,92 sampai 1,13 yang memuat nilai satu. Ragamnya sudah stasioner, jadi penanganan cukup diarahkan pada rataan.
+
+## Differencing
+
+```{r}
+surya_diff <- diff(surya, differences = 1)
+surya_diff |> as_tsibble() |>
+  ggplot(aes(x = index, y = value)) +
+  geom_line(color = "darkorange") + theme_bw() +
+  xlab("Amatan ke-") + ylab("Selisih Pertama") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red")
+```
+
+```{r}
+c(rataan = mean(surya_diff), ragam = var(surya_diff))
+```
+
+## Plot ACF Setelah Differencing
+
+```{r}
+acf(surya_diff, main = "ACF Setelah Differencing", lag.max = 60)
+```
+
+## Uji ADF Setelah Differencing
+
+```{r}
+adf.test(surya_diff)
+```
+
+Setelah pembedaan satu kali, nilai p turun menjadi 0,01 dan rataannya mendekati nol. Data sudah stasioner dalam rataan.
+
+## Partisi Data
+
+### Bagian 1: amatan 1 sampai 600
+
+```{r}
+ds1 <- surya[1:600] |> ts()
+ds1 |> as_tsibble() |>
+  ggplot(aes(x = index, y = value)) +
+  geom_line(color = "darkorange") + theme_bw() + xlab("Amatan ke-") + ylab("Nilai")
+```
+
+```{r}
+acf(ds1, main = "ACF Bagian 1", lag.max = 60)
+```
+
+```{r}
+adf.test(ds1)
+```
+
+```{r}
+idx_s1 <- seq_along(ds1)
+bc_s1 <- boxcox(ds1 ~ idx_s1, lambda = seq(-3, 4, by = 0.01))
+selang_lambda(as.vector(ds1))
+```
+
+### Bagian 2: amatan 1 sampai 1200
+
+```{r}
+ds2 <- surya[1:1200] |> ts()
+ds2 |> as_tsibble() |>
+  ggplot(aes(x = index, y = value)) +
+  geom_line(color = "darkorange") + theme_bw() + xlab("Amatan ke-") + ylab("Nilai")
+```
+
+```{r}
+acf(ds2, main = "ACF Bagian 2", lag.max = 60)
+```
+
+```{r}
+adf.test(ds2)
+```
+
+```{r}
+idx_s2 <- seq_along(ds2)
+bc_s2 <- boxcox(ds2 ~ idx_s2, lambda = seq(-3, 4, by = 0.01))
+selang_lambda(as.vector(ds2))
+```
+
+Kedua partisi memberi kesimpulan yang sama dengan deret penuh, yaitu tidak stasioner dalam rataan dengan nilai p 0,4349 dan 0,3294. Ketidakstasioneran ini bersifat menyeluruh, bukan akibat satu periode tertentu saja.
+
+# III. Tidak Stasioner dalam Ragam, Stasioner dalam Rataan
+
+Bagian ini memakai pangsa energi terbarukan tahun 2023 saja, sebanyak 365 amatan, yaitu bagian data yang menjadi jatah pengerjaan kelompok.
+
+```{r}
+p23 <- ts(data$Pangsa[format(data$Tanggal, "%Y") == "2023"])
+length(p23)
+```
+
+## Plot Time Series
+
+```{r}
+p23 |> as_tsibble() |>
+  ggplot(aes(x = index, y = value)) +
+  geom_line(color = "steelblue") + theme_bw() +
+  xlab("Hari ke-") + ylab("Pangsa (%)") +
+  geom_hline(yintercept = mean(p23), linetype = "dashed", color = "red")
+```
+
+Rataannya relatif tetap, tetapi lebar fluktuasinya berubah. Ayunan pada paruh pertama tahun terlihat lebih sempit dibanding paruh kedua.
+
+## Plot ACF
+
+```{r}
+acf(p23, main = "ACF Pangsa 2023")
+```
+
+## Uji ADF
+
+```{r}
+adf.test(p23)
+```
+
+Nilai p sebesar 0,0105 lebih kecil dari 0,05, sehingga data stasioner dalam rataan.
+
+## Plot Box-Cox
+
+```{r}
+idx23 <- seq_along(p23)
+bc23 <- boxcox(p23 ~ idx23, lambda = seq(-3, 4, by = 0.01))
+selang_lambda(as.vector(p23))
+```
+
+Lambda optimum 1,64 dengan selang 1,29 sampai 2,00. Selang ini tidak memuat nilai satu, sehingga data belum stasioner dalam ragam dan perlu ditransformasi.
+
+## Transformasi Box-Cox
+
+```{r}
+p23_trans <- ts(as.vector(p23)^1.64)
+p23_trans |> as_tsibble() |>
+  ggplot(aes(x = index, y = value)) +
+  geom_line(color = "steelblue") + theme_bw() +
+  xlab("Hari ke-") + ylab("Pangsa Hasil Transformasi")
+```
+
+```{r}
+selang_lambda(as.vector(p23_trans))
+```
+
+```{r}
+adf.test(p23_trans)
+```
+
+Setelah dipangkatkan 1,64 sesuai lambda optimum, lambda baru menjadi 1,00 dengan selang 0,79 sampai 1,22 yang sudah memuat nilai satu. Kestasioneran dalam rataan tetap terjaga dengan nilai p 0,0133.
+
+## Partisi Data
+
+### Bagian 1: amatan 1 sampai 120
+
+```{r}
+dp1 <- p23[1:120] |> ts()
+dp1 |> as_tsibble() |>
+  ggplot(aes(x = index, y = value)) +
+  geom_line(color = "steelblue") + theme_bw() + xlab("Hari ke-") + ylab("Pangsa (%)")
+```
+
+```{r}
+acf(dp1, main = "ACF Bagian 1")
+```
+
+```{r}
+adf.test(dp1)
+```
+
+```{r}
+idx_p1 <- seq_along(dp1)
+bc_p1 <- boxcox(dp1 ~ idx_p1, lambda = seq(-3, 4, by = 0.01))
+selang_lambda(as.vector(dp1))
+```
+
+### Bagian 2: amatan 1 sampai 240
+
+```{r}
+dp2 <- p23[1:240] |> ts()
+dp2 |> as_tsibble() |>
+  ggplot(aes(x = index, y = value)) +
+  geom_line(color = "steelblue") + theme_bw() + xlab("Hari ke-") + ylab("Pangsa (%)")
+```
+
+```{r}
+acf(dp2, main = "ACF Bagian 2")
+```
+
+```{r}
+adf.test(dp2)
+```
+
+```{r}
+idx_p2 <- seq_along(dp2)
+bc_p2 <- boxcox(dp2 ~ idx_p2, lambda = seq(-3, 4, by = 0.01))
+selang_lambda(as.vector(dp2))
+```
+
+Partisi pertama yang hanya mencakup 120 hari pertama memiliki selang lambda 0,64 sampai 1,82 yang masih memuat nilai satu, sehingga ragamnya terbaca stasioner. Begitu diperpanjang menjadi 240 hari, selangnya bergeser ke 1,35 sampai 2,24 dan tidak lagi memuat satu. Ketidakstasioneran ragam pada data ini baru muncul setelah pertengahan tahun.
+
+# Kesimpulan
+
+1. Pangsa energi terbarukan 2021 sampai 2025 stasioner dalam rataan maupun ragam. Uji ADF memberi nilai p 0,01 dan selang lambda 0,88 sampai 1,15 memuat nilai satu, sehingga tidak perlu penanganan apa pun.
+
+2. Akar pembangkitan surya tidak stasioner dalam rataan dengan nilai p 0,3372, sementara ragamnya sudah stabil dengan selang lambda 0,92 sampai 1,13. Pembedaan satu kali menurunkan nilai p menjadi 0,01 dan membuat rataannya mendekati nol.
+
+3. Pangsa tahun 2023 stasioner dalam rataan dengan nilai p 0,0105, tetapi tidak stasioner dalam ragam karena selang lambda 1,29 sampai 2,00 tidak memuat nilai satu. Transformasi pangkat 1,64 memindahkan lambda ke 1,00 dengan selang 0,79 sampai 1,22.
+
+4. Pemeriksaan partisi menunjukkan kesimpulan kestasioneran bergantung pada panjang periode yang diamati. Ragam pangsa 2023 baru terbaca tidak stasioner setelah periode diperpanjang melampaui pertengahan tahun, sedangkan ketidakstasioneran rataan pada pembangkitan surya konsisten di semua partisi.
+
+5. Urutan penanganan yang tepat adalah memperbaiki ragam lebih dahulu melalui transformasi, baru memperbaiki rataan melalui pembedaan, karena pembedaan tidak memperbaiki ragam yang berubah.
